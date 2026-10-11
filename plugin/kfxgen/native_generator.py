@@ -360,6 +360,31 @@ def _has_space_above(block):
     return (block.get("block_style") or {}).get("indent") is None
 
 
+def _space_to_write(block):
+    """The space a scene break puts above a paragraph, in ems, or None to
+    keep kfxgen's own when that is as much: a line (1.2em) above an
+    unindented paragraph, none above an indented one (#230)."""
+    em = block.get("space_above")
+    if not em:
+        return None
+    own = 0.0 if (block.get("block_style") or {}).get("indent") else _LINE_EM
+    return em if em > own + 0.01 else None
+
+
+def _drop_edge_rules(blocks):
+    """A chapter's blocks without the rules at its start or end: the page
+    break already separates chapters, and Gutenberg puts an <hr> before
+    each chapter heading (#230). Run before the chapter title is cut, so a
+    rule under the book's own heading stays under kfxgen's, where a browser
+    and Kindle Previewer draw it."""
+    blocks = list(blocks)
+    while blocks and blocks[0].get("type") == "rule":
+        blocks.pop(0)
+    while blocks and blocks[-1].get("type") == "rule":
+        blocks.pop()
+    return blocks
+
+
 def _block_keys(block):
     """Every anchor key a block holds, inside a box or a table included."""
     keys = list(block.get("anchor_keys") or ())
@@ -1654,8 +1679,9 @@ class NativeKFXGenerator:
                 kind = chunk.get("type") if isinstance(chunk, dict) else "text"
                 if kind == "close":
                     continue  # ends a container; takes no position (#219)
-                if kind in ("image", "open"):
-                    # synthetic; an image or a container takes one offset slot
+                if kind in ("image", "open", "rule"):
+                    # synthetic; an image, a rule or a container takes one
+                    # offset slot
                     chunk_text_len = 1
                 elif isinstance(chunk, dict):
                     chunk_text_len = len(chunk["text"])
@@ -1842,6 +1868,7 @@ class NativeKFXGenerator:
         font_family=None,
         baseline_style=None,
         no_align=False,
+        space_above=None,
     ):
         """
         Builds Fragment $157 (Style Definition).
@@ -1869,6 +1896,9 @@ class NativeKFXGenerator:
                         margin-left ($48). Default None uses 0.5% ($314).
             margin_right: If a tuple (magnitude_str, unit_symbol), emit margin-right ($50).
                          Default None omits $50.
+            space_above: Space above the paragraph in ems, from the book's
+                        margins (#230). Written as $47 in place of the 1lh
+                        default, indented or not.
             baseline_style: Symbol emitted as $44 — `$370` raises
                         (superscript), `$371` lowers (subscript). Reference
                         noteref styles pair it with a reduced $16 font-size.
@@ -1937,7 +1967,14 @@ class NativeKFXGenerator:
         # inter-paragraph spacing; headings get their spacing from $46 (margin_top
         # param). A non-zero first-line indent replaces inter-paragraph spacing
         # (print convention), so suppress this top margin when indented.
-        if not is_heading and text_indent is None:
+        if space_above is not None:
+            value[IS("$47")] = IonStruct(
+                IS("$307"),
+                IonDecimal(f"{space_above / _LINE_EM:.6g}"),
+                IS("$306"),
+                IS("$310"),
+            )
+        elif not is_heading and text_indent is None:
             value[IS("$47")] = IonStruct(
                 IS("$307"), IonDecimal("1"), IS("$306"), IS("$310")
             )  # margin-top: 1lh
@@ -2398,6 +2435,24 @@ class NativeKFXGenerator:
                 entry[IS("$146")] = []
                 stack[-1].append(entry)
                 stack.append(entry[IS("$146")])
+                continue
+
+            if kind == "rule":
+                # A horizontal rule (#230): no text, one position, its
+                # spacing in its style, as Kindle Previewer writes <hr>.
+                self.symtab.create_local_symbol(story_name)
+                entry = IonStruct(
+                    IS("$155"),
+                    position,
+                    IS("$157"),
+                    IS(story_name),
+                    IS("$159"),
+                    IS("$596"),
+                )
+                if first_leaf:
+                    entry[IS("$790")] = 1
+                    first_leaf = False
+                stack[-1].append(entry)
                 continue
 
             if (
@@ -3448,6 +3503,7 @@ class NativeKFXGenerator:
             block_anchor_keys = block.get("anchor_keys") or []
             block_offsets = block.get("anchor_offsets") or {}
             block_first_chunk = len(all_chunks)
+            space = _space_to_write(block)
             for chunk in _emit_text_chunks(para, preformatted):
                 if chunk["type"] == "image":
                     # Figure ids live on image blocks; without this
@@ -3484,6 +3540,11 @@ class NativeKFXGenerator:
                 first.setdefault("anchor_offsets", {}).update(
                     dict.fromkeys(block_anchor_keys, 0)
                 )
+            if space and len(all_chunks) > block_first_chunk:
+                # On the first piece only: the rest continue the paragraph.
+                first = all_chunks[block_first_chunk]
+                if first["type"] == "text":
+                    first["space_above"] = space
             return block_anchor_keys if len(all_chunks) == block_first_chunk else []
 
         def _attach_keys(index, keys):
@@ -3780,7 +3841,7 @@ class NativeKFXGenerator:
                 if text:
                     blocks = chapter.get("blocks")
                     if blocks is not None:
-                        iter_blocks = list(blocks)
+                        iter_blocks = _drop_edge_rules(blocks)
                         if iter_blocks and cut_title:
                             first = iter_blocks[0]
                             first_stripped = first["text"].lstrip()
@@ -3859,6 +3920,9 @@ class NativeKFXGenerator:
                         if block.get("type") == "table":
                             _emit_table_chunks(block)
                             unplaced = []
+                        elif block.get("type") == "rule":
+                            all_chunks.append({"type": "rule", "rule": block["rule"]})
+                            unplaced = list(block.get("anchor_keys") or ())
                         elif block.get("type") == "box":
                             following = (
                                 para_iter[b_idx + 1]
@@ -3867,6 +3931,12 @@ class NativeKFXGenerator:
                             )
                             unplaced = _emit_box_chunks(block, following)
                         else:
+                            if b_idx == 0 and block.get("space_above"):
+                                # A chapter's first paragraph opens a page or
+                                # sits under its heading (#230).
+                                block = {
+                                    k: v for k, v in block.items() if k != "space_above"
+                                }
                             unplaced = _emit_paragraph(block)
                         if pending and len(all_chunks) > first:
                             _attach_keys(first, pending)
@@ -4442,6 +4512,23 @@ class NativeKFXGenerator:
                     continue
                 entry_nodes.append(None)
                 entry_extras.append(None)
+                if chunk.get("type") == "rule":
+                    rule = chunk["rule"]
+                    entry_styles.append(
+                        _allocate_style(
+                            "_r",
+                            builder=self.build_box_style_157,
+                            space_above=rule["space_above"],
+                            space_below=rule["space_below"],
+                        )
+                    )
+                    entry_link_targets.append(None)
+                    entry_link_styles.append(None)
+                    entry_link_text_lengths.append(None)
+                    entry_kinds.append("rule")
+                    entry_image_specs.append(None)
+                    entry_emphasis_spans.append(None)
+                    continue
                 if chunk.get("type") == "image":
                     entry_styles.append(
                         None
@@ -4483,6 +4570,8 @@ class NativeKFXGenerator:
                         attrs["margin_left"] = bs["margin_left"]
                     if bs.get("margin_right"):
                         attrs["margin_right"] = bs["margin_right"]
+                    if chunk.get("space_above"):
+                        attrs["space_above"] = chunk["space_above"]
                     # Body run: match the block's font-family, honouring any
                     # block-level CSS bold/italic (only when fonts are embedded,
                     # so no-font books keep byte-identical $157 output). The entry
