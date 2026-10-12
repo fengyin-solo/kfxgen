@@ -8481,3 +8481,131 @@ def test_rows_split_around_a_nested_table_are_not_tight_lines():
         "d",
     ]
     assert _tight(blocks) == []
+
+
+# ── #232, #256: hidden content is not printed ────────────────────────────────
+
+
+def _hide_class(e):
+    return {"display": "none"} if e.get("class") == "hide" else {}
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "body, text",
+    [
+        (
+            '<p>The ship left the harbour<a id="page12" hidden="hidden">12</a> at dawn.</p>',
+            "The ship left the harbour at dawn.",
+        ),
+        (
+            '<p>It reached the cape<span epub:type="pagebreak" id="p13" hidden="">13</span>'
+            " by noon.</p>",
+            "It reached the cape by noon.",
+        ),
+        (
+            '<p>A note was kept<span hidden="hidden">internal marker</span> in the log.</p>',
+            "A note was kept in the log.",
+        ),
+        (
+            '<p>Visible <span style="display:none">css-hidden</span> words.</p>',
+            "Visible words.",
+        ),
+        ('<h2>Title<span hidden="hidden">12</span></h2>', "Title"),
+    ],
+    ids=["a hidden", "pagebreak span", "span hidden", "inline display none", "heading"],
+)
+def test_hidden_inline_content_is_not_printed(body, text):
+    assert _texts(body) == [text]
+
+
+@pytest.mark.unit
+def test_a_hidden_cell_on_the_rows_path_is_not_printed():
+    texts = _texts(
+        '<table><tr><td>Lamp</td><td hidden="hidden">secret</td><td>lit</td></tr></table>'
+    )
+    assert texts == ["Lamp lit"]
+
+
+@pytest.mark.unit
+def test_a_hidden_page_markers_id_stays_where_it_was():
+    """Page-list navs and in-book links point at hidden page markers; the
+    link must still land at the marker's place (#51/#53)."""
+    blocks = extract_blocks_from_html(
+        _doc('<p>The harbour<a id="page12" hidden="hidden">12</a> at dawn.</p>'),
+        base_href="c.xhtml",
+    )
+    assert blocks[0]["text"] == "The harbour at dawn."
+    assert blocks[0]["anchor_offsets"]["c.xhtml#page12"] == len("The harbour")
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("tag", ["p", "div"])
+def test_a_block_hidden_by_css_is_not_printed_and_its_ids_move_on(tag):
+    blocks = extract_blocks_from_html(
+        _doc(
+            f'<p>Before.</p><{tag} class="hide" id="ans"><span id="inner">Answer: 42.'
+            f"</span></{tag}><p>After.</p>"
+        ),
+        style_resolver=_hide_class,
+    )
+    assert [b["text"] for b in blocks] == ["Before.", "After."]
+    assert {"ans", "inner"} <= set(blocks[1]["anchor_ids"])
+
+
+@pytest.mark.unit
+def test_a_span_hidden_by_css_is_not_printed():
+    blocks = extract_blocks_from_html(
+        _doc('<p>Visible <span class="hide">answer</span> words.</p>'),
+        style_resolver=_hide_class,
+    )
+    assert [b["text"] for b in blocks] == ["Visible words."]
+
+
+@pytest.mark.unit
+def test_a_hidden_attribute_block_passes_its_ids_on():
+    """Its text was already dropped; its ids went with it."""
+    blocks = extract_blocks_from_html(
+        _doc('<p>Before.</p><p hidden="hidden" id="h">Hidden.</p><p>After.</p>')
+    )
+    assert [b["text"] for b in blocks] == ["Before.", "After."]
+    assert "h" in blocks[1]["anchor_ids"]
+
+
+@pytest.mark.unit
+def test_a_clipped_visually_hidden_heading_stays():
+    """Some books hide a heading kept for navigation with position and clip,
+    not display: none; it is not hidden from kfxgen (#232)."""
+    blocks = extract_blocks_from_html(
+        _doc('<h1 class="vh">Chapter 1</h1><p>Text.</p>'),
+        style_resolver=lambda e: (
+            {"position": "absolute", "clip": "rect(0 0 0 0)"}
+            if e.get("class") == "vh"
+            else {}
+        ),
+    )
+    assert [b["text"] for b in blocks] == ["Chapter 1", "Text."]
+
+
+@pytest.mark.unit
+def test_a_list_item_hidden_by_css_takes_no_number():
+    """QA review: it vanished but kept its number, "1. one / 3. three"."""
+    texts = _texts(
+        '<ol><li>one</li><li class="hide">two</li><li>three</li></ol>',
+        style_resolver=_hide_class,
+    )
+    assert texts == ["1. one", "2. three"]
+
+
+@pytest.mark.unit
+def test_a_table_with_a_row_hidden_by_css_is_written_as_rows_without_it():
+    """QA review: native tables kept it; the row path drops it."""
+    blocks = extract_blocks_from_html(
+        _doc(
+            "<table><tr><td>a</td><td>b</td></tr>"
+            '<tr class="hide"><td>s</td><td>t</td></tr></table>'
+        ),
+        style_resolver=_hide_class,
+        native_tables=True,
+    )
+    assert [b.get("type") or b["text"] for b in blocks] == ["a b"]

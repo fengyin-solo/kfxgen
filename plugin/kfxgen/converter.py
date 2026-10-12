@@ -698,6 +698,12 @@ def _walk_inline(
         # An unresolved entity node lands here too; calibre resolves entities
         # before the plugin sees the tree, so a conversion never meets one.
         return []
+    if not is_root and _is_hidden(elem, style_resolver):
+        # Hidden text inside a paragraph, a heading or a row: mostly page
+        # markers (<a id="page12" hidden>12</a>), printed as "harbour12".
+        # Its ids keep their place, since page lists and links point at
+        # them; the caller keeps its tail, which is visible (#256).
+        return [make_anchor_mark(aid) for aid in _subtree_anchor_ids(elem)]
     local = _local_tag(elem.tag)
     if local == "br":
         # A forced line break, which the normalizer turns into a newline. It
@@ -1110,7 +1116,7 @@ def _note_pair_ids(oeb_book):
     return found
 
 
-def _table_is_native(table):
+def _table_is_native(table, style_resolver=None):
     """True when `table` can be written as a real KFX table (#219).
 
     Anything else keeps rows as paragraphs: a nested table, an object other
@@ -1129,6 +1135,7 @@ def _table_is_native(table):
     than `_MAX_NATIVE_COLUMNS`, whose text would be too small to read.
 
     An <epub:switch>'s cases are not drawn, so they count for nothing (#315).
+    Hidden means `_is_hidden`, CSS included, with `style_resolver` (#232).
     """
     table = _shown_tree(table)
     rows = 0
@@ -1139,7 +1146,7 @@ def _table_is_native(table):
         if tag is None:
             continue
         if tag in _ROW_GROUP_TAGS or tag == "tr" or tag in _CELL_TAGS:
-            if e is not table and (_is_non_rendered(e) or _is_nav_listing(e)):
+            if e is not table and (_is_hidden(e, style_resolver) or _is_nav_listing(e)):
                 return False
         if tag in _ROW_GROUP_TAGS or tag == "tr":
             if (e.text or "").strip() or any((c.tail or "").strip() for c in e):
@@ -1153,7 +1160,7 @@ def _table_is_native(table):
             return False
         if tag == "caption":
             # A hidden caption would be shown; only the first is kept.
-            if _is_non_rendered(e):
+            if _is_hidden(e, style_resolver):
                 return False
             captions += 1
             if captions > 1:
@@ -1931,6 +1938,22 @@ def _is_non_rendered(elem):
     return any(part in _NON_RENDERED_EPUB_TYPES for part in raw.lower().split())
 
 
+_INLINE_DISPLAY_NONE = re.compile(r"(?:^|;)\s*display\s*:\s*none\s*(?:;|$|!)", re.I)
+
+
+def _is_hidden(elem, style_resolver):
+    """`_is_non_rendered`, or hidden by CSS: `display: none`, computed by
+    calibre's Stylizer when it is there, else read from the element's own
+    `style` attribute (#232, #256). An element hidden by position and clip,
+    a heading kept for navigation, is not hidden here."""
+    if _is_non_rendered(elem):
+        return True
+    if style_resolver is not None:
+        css = style_resolver(elem) or {}
+        return str(css.get("display") or "").strip().lower() == "none"
+    return bool(_INLINE_DISPLAY_NONE.search(elem.get("style") or ""))
+
+
 _EPUB_NS = "{http://www.idpf.org/2007/ops}"
 
 
@@ -2192,13 +2215,14 @@ def _parse_int(value):
         return None
 
 
-def _list_ordinals(list_elem):
+def _list_ordinals(list_elem, style_resolver=None):
     """{li: ordinal} for the items of one list, honouring `start`, `reversed`
-    and `<li value>`. Hidden items take no number, as in a browser."""
+    and `<li value>`. Hidden items take no number, as in a browser, CSS
+    included (#232)."""
     items = [
         child
         for child in list_elem
-        if _local_tag(child.tag) == "li" and not _is_non_rendered(child)
+        if _local_tag(child.tag) == "li" and not _is_hidden(child, style_resolver)
     ]
     is_reversed = list_elem.get("reversed") is not None
     start = _parse_int(list_elem.get("start"))
@@ -2779,7 +2803,7 @@ def extract_blocks_from_html(
         )
 
     def _walk(elem):
-        if _local_tag(elem.tag) != "li" or _is_non_rendered(elem):
+        if _local_tag(elem.tag) != "li" or _is_hidden(elem, style_resolver):
             start = len(blocks)
             _walk_element(elem)
             if (
@@ -2799,7 +2823,7 @@ def extract_blocks_from_html(
             return
         parent = elem.getparent()
         if parent not in list_ordinals:
-            list_ordinals[parent] = _list_ordinals(parent)
+            list_ordinals[parent] = _list_ordinals(parent, style_resolver)
         css = style_resolver(elem) if style_resolver is not None else None
         entry = _list_marker(elem, css, list_ordinals[parent])
         if entry is None:
@@ -2821,7 +2845,10 @@ def extract_blocks_from_html(
             # not a paragraph (#252). Also an unresolved entity node, which a
             # calibre tree never holds.
             return
-        if _is_non_rendered(elem):
+        if _is_hidden(elem, style_resolver):
+            # Not printed, but links into it still land: its ids name the
+            # next block shown (#232).
+            pending_ids.extend(_subtree_anchor_ids(elem))
             return
         switch = _epub_switch_branch(elem)
         if switch is not None:
@@ -2859,7 +2886,9 @@ def extract_blocks_from_html(
             return
 
         native = (
-            native_tables and _local_tag(elem.tag) == "table" and _table_is_native(elem)
+            native_tables
+            and _local_tag(elem.tag) == "table"
+            and _table_is_native(elem, style_resolver)
         )
         if native and _is_notes_table(elem, base_href, link_targets):
             # A notes section reads better as paragraphs, one per note (#268).
@@ -3221,7 +3250,8 @@ def extract_blocks_from_html(
                 _walk(child)
                 if follow and _local_tag(child.tag) == "tr":
                     row_block = blocks[start] if len(blocks) > start else None
-            elif not _is_non_rendered(child):
+            else:
+                # A hidden child gives only its ids (#256).
                 inline_parts.extend(
                     _walk_inline(
                         child,
