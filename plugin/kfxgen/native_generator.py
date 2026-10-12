@@ -360,6 +360,11 @@ def _has_space_above(block):
     return (block.get("block_style") or {}).get("indent") is None
 
 
+#: What may be trimmed from a paragraph's edges: ASCII whitespace, never a
+#: non-breaking space the book set for indentation (#244).
+_ASCII_SPACE = " \t\n\r\f"
+
+
 def _space_to_write(block):
     """The space a scene break puts above a paragraph, in ems, or None to
     keep kfxgen's own when that is as much: a line (1.2em) above an
@@ -3368,14 +3373,21 @@ class NativeKFXGenerator:
             that carry it. (#202)"""
 
             def _trim(seg):
-                return seg.rstrip() if preformatted else seg.strip()
+                # ASCII only: a non-breaking space is the book's (#244).
+                return (
+                    seg.rstrip(_ASCII_SPACE)
+                    if preformatted
+                    else seg.strip(_ASCII_SPACE)
+                )
 
             chunks = []
             last = 0
             for m in IMG_TOKEN_RE.finditer(para_text):
                 if m.start() > last:
                     seg = _trim(para_text[last : m.start()])
-                    if seg:
+                    # Only spaces, a non-breaking one beside a picture: no
+                    # entry (#244).
+                    if seg.strip():
                         chunks.append({"type": "text", "text": seg})
                 href = m.group(1)
                 alt = m.group(2).replace("\x02", " ")
@@ -3399,7 +3411,7 @@ class NativeKFXGenerator:
                 last = m.end()
             if last < len(para_text):
                 seg = _trim(para_text[last:])
-                if seg:
+                if seg.strip():
                     chunks.append({"type": "text", "text": seg})
             return chunks
 
@@ -3497,7 +3509,11 @@ class NativeKFXGenerator:
             nothing (only a picture the book doesn't hold), so the caller
             can put them elsewhere."""
             preformatted = bool(block.get("preformatted"))
-            para = block["text"].rstrip() if preformatted else block["text"].strip()
+            para = (
+                block["text"].rstrip(_ASCII_SPACE)
+                if preformatted
+                else block["text"].strip(_ASCII_SPACE)
+            )
             if not para.strip():
                 return []
             para_spans = block.get("spans", [])

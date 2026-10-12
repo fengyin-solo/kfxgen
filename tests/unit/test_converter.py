@@ -8792,3 +8792,32 @@ def test_a_file_name_label_with_its_extension_is_a_file_name_too():
         [("split_000.xhtml", "split_000.xhtml", "<h1>The Harbour</h1><p>Boats.</p>")]
     )
     assert chapter["title"] == "The Harbour"
+
+
+# ── #244: non-breaking spaces are the book's own ────────────────────────────
+
+
+@pytest.mark.unit
+def test_leading_nbsps_indent_a_paragraph():
+    assert _texts("<p>&#160;&#160;&#160;&#160;Indented</p>") == [" " * 4 + "Indented"]
+
+
+@pytest.mark.unit
+def test_an_nbsp_indented_verse_line_keeps_its_indent():
+    texts = _texts("<p>The first line,<br/>&#160;&#160;the second, indented.</p>")
+    assert texts == ["The first line,\n  the second, indented."]
+
+
+@pytest.mark.unit
+def test_an_nbsp_only_paragraph_is_still_a_spacer():
+    """#230: a blank line, not a paragraph of a space."""
+    blocks = extract_blocks_from_html(_doc("<p>a</p><p>&#160;</p><p>b</p><p>c</p>"))
+    assert [b["text"] for b in blocks] == ["a", "b", "c"]
+    assert blocks[1].get("space_above") == 1.2
+
+
+@pytest.mark.unit
+def test_a_loose_nbsp_between_blocks_is_not_a_paragraph():
+    """QA review: inline text between two blocks that is only a
+    non-breaking space gives no block of its own."""
+    assert _texts("<div><p>A</p>&#160;<p>B</p></div>") == ["A", "B"]
