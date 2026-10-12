@@ -2683,33 +2683,51 @@ def test_tables_that_fall_back_to_rows(html):
 
 
 @pytest.mark.unit
-def test_a_cell_over_the_chunk_size_falls_back():
-    # Kept from the generator's old 2,000-character cut (#226); #348 is
-    # whether to lift it.
+def test_a_long_cell_in_a_wider_table_falls_back():
+    """#348: in two or more columns the Voyage's table viewer fits the whole
+    table on one screen, and a long cell can't be read there."""
     long_cell = "x" * (_conv._MAX_NATIVE_CELL_CHARS + 1)
     assert not _conv._table_is_native(
-        _first_table(f"<table><tr><td>{long_cell}</td></tr></table>")
+        _first_table(f"<table><tr><td>{long_cell}</td><td>z</td></tr></table>")
     )
 
 
 @pytest.mark.unit
-def test_a_cell_at_exactly_the_chunk_size_stays_native():
-    # Boundary case: exactly at the limit stays native.
+def test_a_cell_at_exactly_the_limit_stays_native():
     cell_at_limit = "x" * _conv._MAX_NATIVE_CELL_CHARS
     assert _conv._table_is_native(
-        _first_table(f"<table><tr><td>{cell_at_limit}</td></tr></table>")
+        _first_table(f"<table><tr><td>{cell_at_limit}</td><td>z</td></tr></table>")
     )
 
 
 @pytest.mark.unit
 def test_a_cell_with_line_breaks_counts_them_in_length():
     # itertext() doesn't include <br/>, but the converter turns each into a
-    # newline. A cell of (MAX - 10) chars + 20 <br/> would normalize to 2010
-    # chars and must fall back (#226).
+    # newline. A cell of (MAX - 10) chars + 20 <br/> normalizes to 2010.
     text = "x" * (_conv._MAX_NATIVE_CELL_CHARS - 10)
     br_tags = "".join("<br/>" for _ in range(20))
     assert not _conv._table_is_native(
-        _first_table(f"<table><tr><td>{text}{br_tags}</td></tr></table>")
+        _first_table(f"<table><tr><td>{text}{br_tags}</td><td>z</td></tr></table>")
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "cell",
+    [
+        "x" * 6000,
+        "<p>" + "x" * 6000 + "</p><p>b</p>",
+        "<p>a</p>" + "x" * 6000,
+        "x" * 1990 + "<br/>" * 20,
+    ],
+    ids=["plain", "long-p", "long-loose", "line-breaks"],
+)
+def test_a_long_cell_in_a_one_column_table_stays_native(cell):
+    """#348: a one-column table has no table viewer, and on the Voyage a
+    long cell pages through like any paragraph. The 2,000-character limit
+    came from the generator's cut (#226), which is gone."""
+    assert _conv._table_is_native(
+        _first_table(f"<table><tr><td>{cell}</td></tr></table>")
     )
 
 
@@ -2738,7 +2756,8 @@ def test_a_cell_with_line_breaks_counts_them_in_length():
 def test_a_cell_holding_several_blocks_stays_native(cell, native):
     # #261: 131 Gutenberg tables fell back for this alone, and the rows build
     # ran each poem in them into one paragraph. The 2,000-character cell
-    # limit applies to each paragraph of such a cell, not to the whole cell.
+    # limit of a wider table applies to each paragraph of such a cell, not
+    # to the whole cell.
     html = f"<table><tr>{cell}<td>z</td></tr></table>"
     assert _conv._table_is_native(_first_table(html)) is native
 
@@ -8814,3 +8833,11 @@ def test_a_loose_nbsp_between_blocks_is_not_a_paragraph():
     """QA review: inline text between two blocks that is only a
     non-breaking space gives no block of its own."""
     assert _texts("<div><p>A</p>&#160;<p>B</p></div>") == ["A", "B"]
+
+
+@pytest.mark.unit
+def test_a_long_cell_is_one_paragraph_of_its_cell():
+    """#348: the long cell's text reaches the generator whole, in its cell."""
+    long = "The tide went out over the flats. " * 180
+    table, _ = _native_table(f"<table><tr><td>{long}</td></tr></table>")
+    assert _cell(table, 0, 0)["text"].strip() == long.strip()

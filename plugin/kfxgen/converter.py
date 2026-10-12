@@ -94,9 +94,10 @@ _NON_TEXT_TAGS = {
     "embed",
     "iframe",
 }
-#: The longest cell entry a native table takes. It was the generator's
-#: 2,000-character cut, which would have split a cell in two; the cut is gone
-#: (#226), and lifting the limit is #348.
+#: The longest cell entry a native table of two or more columns takes. Their
+#: table viewer fits the whole table on one screen, where a longer cell can't
+#: be read (Voyage 5.13.6, #348). A one-column table has no viewer and pages
+#: through a long cell like any paragraph, so it takes any length.
 _MAX_NATIVE_CELL_CHARS = 2000
 #: The widest table checked on a device (#254). With the table-viewer
 #: properties the Voyage (5.13.6) and the Oasis (5.18.2.1.1) read every table
@@ -1141,8 +1142,9 @@ def _table_is_native(table, style_resolver=None):
     """True when `table` can be written as a real KFX table (#219).
 
     Anything else keeps rows as paragraphs: a nested table, an object other
-    than an <img> (#262), a cell or a paragraph in a cell longer than the generator's chunk
-    size, a cell outside a row, or no rows or cells at all. A cell holding
+    than an <img> (#262), a cell or a paragraph in a cell over
+    `_MAX_NATIVE_CELL_CHARS` in a table of two or more columns (#348), a cell
+    outside a row, or no rows or cells at all. A cell holding
     several blocks is written as paragraphs (#261).
 
     Also anything the row path handles and the native walk would not: a
@@ -1161,6 +1163,7 @@ def _table_is_native(table, style_resolver=None):
     table = _shown_tree(table)
     rows = 0
     cells = 0
+    long_cell = False
     captions = 0
     for e in table.iter():
         tag = _local_tag(e.tag)
@@ -1206,9 +1209,11 @@ def _table_is_native(table, style_resolver=None):
             if _local_tag(e.getparent().tag) != "tr":
                 return False
             cells += 1
-            if _longest_cell_run(e) > _MAX_NATIVE_CELL_CHARS:
-                return False
-    return rows > 0 and cells > 0 and _table_width(table) <= _MAX_NATIVE_COLUMNS
+            long_cell = long_cell or _longest_cell_run(e) > _MAX_NATIVE_CELL_CHARS
+    width = _table_width(table)
+    if long_cell and width > 1:
+        return False
+    return rows > 0 and cells > 0 and width <= _MAX_NATIVE_COLUMNS
 
 
 def _text_length(elem):
@@ -1234,9 +1239,9 @@ def _longest_cell_run(cell):
 
     A cell of plain text, or one block, is one entry. A cell of several blocks
     is one entry per block with no block inside it, plus its loose text; that
-    is counted as one run, which can only overstate. A cell over
-    `_MAX_NATIVE_CELL_CHARS` keeps the table out of the native format (#261,
-    #348)."""
+    is counted as one run, which can only overstate. In a table of two or
+    more columns, a cell over `_MAX_NATIVE_CELL_CHARS` keeps the table out of
+    the native format (#261, #348)."""
     if _cell_paragraph_count(cell) < 2:
         return _text_length(cell)
     leaves = [
