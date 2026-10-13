@@ -18,8 +18,8 @@ normal everywhere, because calibre reports it converted (as 299.197); it now
 counts as bold.
 
 **Strike-through and underline (#237).** `<s>`, `<del>`, `<strike>` and CSS
-`line-through` came out as plain text, so crossed-out words read as meant;
-`<u>`, `<ins>` and CSS `underline` lost their line. Both are now drawn, as
+`line-through` came out as plain text, so a deleted word read as if it
+still stood; `<u>`, `<ins>` and CSS `underline` lost their line. Both are now drawn, as
 Kindle Previewer writes them. A book's `text-decoration: none` is followed,
 so Gutenberg's transcriber corrections (`<ins>` with no line in its CSS) stay
 plain. Links that a book's CSS underlines, as Gutenberg's stylesheet does,
@@ -39,7 +39,8 @@ land on their target.
 **Books of pictures only (#357).** A book with no text declared a text
 capability anyway, which KFX Input reported as a structure error. It now
 declares none, as KFX Input's own conversion does. Books with text are
-unchanged: the Gutenberg 90 convert byte-identical.
+unchanged, as the capability is only left out when there is no text (the
+Gutenberg 90 are byte-identical through the test shim).
 
 ## 5.11.1 — Long paragraphs, reading progress and chapter titles
 
