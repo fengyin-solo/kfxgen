@@ -24,7 +24,8 @@ Book Old":
      "Page 1" to "Page 8", in order.
   2. Turn forward to "Page 8" and back to "Page 1": every page turns, none
      is skipped or blank.
-  3. Go to "Page 5". The reading progress at the bottom is about halfway.
+  3. The reading progress at the bottom is one eighth per page: "Page 4"
+     shows 50% and "Page 5" shows 62% (Voyage 5.13.6).
   4. Close the book and open it again: it reopens at the same page.
 """
 
