@@ -18,9 +18,10 @@ other on the device.
 
 Output (default `test_books/image_links/`) is gitignored. Do not commit it.
 
-Every picture links to a page of its own, with a line naming it ("This is
-large picture 1." to "This is large picture 4."), so a link that lands in
-the wrong place shows.
+Each small picture shows its number (1 to 6). Each one links to a page of
+its own, with the large picture marked "Large 1" to "Large 4" and a line
+naming it ("This is large picture 1."), so a link that lands in the wrong
+place shows.
 
 On each device (the Voyage first), "Image Links New" first, then "Image
 Links Old". Open each entry from the TOC:
@@ -57,7 +58,6 @@ from make_table_sideload import (  # noqa: E402
     install_plugin,
 )
 
-from tests._helpers import jpeg_of  # noqa: E402
 from tests._kfx_introspect import by_type, iter_entries, load_fragments, val  # noqa: E402
 from tests.fixtures.epub_builder import EpubBuilder  # noqa: E402
 
@@ -69,6 +69,24 @@ def _page(title, body):
         f"<head><title>{title}</title></head>\n"
         f"<body>\n<h1>{title}</h1>\n{body}\n</body>\n</html>\n"
     )
+
+
+def _jpeg(size, label):
+    """A real picture with `label` drawn large on it, so each one can be told
+    apart on the device. (`tests._helpers.jpeg_of` only declares a size and
+    shows nothing.)"""
+    import io
+
+    from PIL import Image, ImageDraw, ImageFont
+
+    im = Image.new("RGB", (size, size), (225, 225, 225))
+    draw = ImageDraw.Draw(im)
+    draw.rectangle((0, 0, size - 1, size - 1), outline=(0, 0, 0), width=size // 40 + 2)
+    font = ImageFont.load_default(size=size // 3)
+    draw.text((size / 2, size / 2), label, fill=(0, 0, 0), font=font, anchor="mm")
+    buf = io.BytesIO()
+    im.save(buf, format="JPEG", quality=90)
+    return buf.getvalue()
 
 
 def _thumb(n, target=None):
@@ -120,14 +138,14 @@ def build_source(out_dir):
             item_id=f"thumb{n}",
             href=f"thumb{n}.jpg",
             media_type="image/jpeg",
-            data=jpeg_of(144, 144),
+            data=_jpeg(144, str(n)),
         )
     for n in range(1, 5):
         builder.add_manifest_item(
             item_id=f"large{n}",
             href=f"large{n}.jpg",
             media_type="image/jpeg",
-            data=jpeg_of(1000, 1000),
+            data=_jpeg(1000, f"Large {n}"),
         )
     return builder.build(out_dir, "image-links-source")
 
