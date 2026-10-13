@@ -208,6 +208,11 @@ def _build_style_resolver(oeb_book, item, log, stylizer_factory=None):
                     # sets it, and calibre's `.get()` is the element's own
                     # (#237).
                     "text-decoration": _decoration_lines(stylizer, elem),
+                    # The element's own: what a <b> or <i> set to normal
+                    # draws instead, which kfxgen can't yet (#239, #362).
+                    "letter-spacing": st.get("letter-spacing"),
+                    "font-variant": st.get("font-variant"),
+                    "text-transform": st.get("text-transform"),
                     "font-style": _computed_value(st, "font-style"),
                     # vertical-align does NOT inherit, so .get() is right here:
                     # it returns the declared value, or None when the element
@@ -711,6 +716,20 @@ def _is_preformatted(elem, style_resolver):
     return FLAG_PRE in _white_space_flags(elem, style_resolver, frozenset())
 
 
+def _swaps_emphasis(css):
+    """Whether an element's own CSS draws emphasis kfxgen can't yet: letter-
+    spacing, small caps or a text-transform (#239). A <b> or <i> set to
+    normal with one of these keeps the tag's style, so its words still look
+    emphasised (#362)."""
+    # Widened only: `normal`, 0 and a tightening (negative) read as None.
+    if parse_css_length(str(css.get("letter-spacing") or "")) is not None:
+        return True
+    if "small-caps" in str(css.get("font-variant") or "").lower():
+        return True
+    transform = str(css.get("text-transform") or "").strip().lower()
+    return transform in ("uppercase", "lowercase", "capitalize")
+
+
 def _css_emphasis(css):
     """(bold, italic, monospace families or None) from an element's computed
     CSS, or None without it.
@@ -864,12 +883,27 @@ def _walk_inline(
         if parent_emphasis is None and elem.getparent() is not None:
             parent_emphasis = _css_emphasis(style_resolver(elem.getparent()))
         if emphasis is not None and parent_emphasis is not None:
-            for flag, now, before in zip(
-                (FLAG_BOLD, FLAG_ITALIC), emphasis, parent_emphasis
+            for flag, prop, tags, now, before in zip(
+                (FLAG_BOLD, FLAG_ITALIC),
+                ("font-weight", "font-style"),
+                (_BOLD_TAGS, _ITALIC_TAGS),
+                emphasis,
+                parent_emphasis,
             ):
                 if now and not before:
                     cur.add(flag)
-                elif before and not now:
+                elif not now and (before or prop in own_css):
+                    # Normal here: under bold, or a <b>/<i> whose CSS says
+                    # normal (#362). With calibre the resolver always
+                    # reports `prop`, and its UA sheet styles every <b>,
+                    # <strong>, <i> and <em>; a test resolver that doesn't
+                    # leaves tags alone. Bold the element shares with its
+                    # parent stays the tag's: a no-font book writes no block
+                    # bold (#34).
+                    if local in tags and _swaps_emphasis(own_css):
+                        # Swapped for an effect kfxgen can't draw yet: the
+                        # tag's style keeps the words emphasised.
+                        continue
                     cur.discard(flag)
             if emphasis[2] != parent_emphasis[2]:
                 # Monospace starts, ends, or changes family (#242).
