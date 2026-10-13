@@ -3185,14 +3185,16 @@ class NativeKFXGenerator:
         # CRITICAL: Container-level fragments must NOT have fid — only ftype.
         # Using both fid+ftype creates double annotation ($348::$593::) that
         # breaks Kindle parsing of the format_capabilities blob.
-        self.symtab.create_local_symbol("kfxgen.textBlock")
-        self.symtab.create_local_symbol("version")
-        self.fragments.append(
-            YJFragment(
-                ftype=IS("$593"),
-                value=[IonStruct(IS("$492"), "kfxgen.textBlock", IS("version"), 1)],
+        # textBlock goes with the $145 fragments: a book of pictures only has
+        # none, so it declares nothing, as kfxlib's own conversion does (#357).
+        capabilities = []
+        if content_names:
+            self.symtab.create_local_symbol("kfxgen.textBlock")
+            self.symtab.create_local_symbol("version")
+            capabilities.append(
+                IonStruct(IS("$492"), "kfxgen.textBlock", IS("version"), 1)
             )
-        )
+        self.fragments.append(YJFragment(ftype=IS("$593"), value=capabilities))
 
         # 12. Build Fragment $597 (Section Annotation) - one per section
         self.symtab.create_local_symbol("IS_TARGET_SECTION")
