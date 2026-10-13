@@ -814,10 +814,6 @@ def _walk_inline(
         cur.add(FLAG_SUPER)
     if local in _SUB_TAGS:
         cur.add(FLAG_SUB)
-    if local in _UNDERLINE_TAGS:
-        cur.add(FLAG_UNDERLINE)
-    if local in _STRIKE_TAGS:
-        cur.add(FLAG_STRIKE)
     if local == "a":
         target = _resolve_link_target(elem.get("href"), base_href)
         if target:
@@ -832,11 +828,21 @@ def _walk_inline(
     if style_resolver is not None:
         own_css = style_resolver(elem)
         emphasis = _css_emphasis(own_css)
-        lines = str((own_css or {}).get("text-decoration") or "").split()
-        if "underline" in lines:
-            cur.add(FLAG_UNDERLINE)
-        if "line-through" in lines:
-            cur.add(FLAG_STRIKE)
+    if style_resolver is not None and "text-decoration" in (own_css or {}):
+        # CSS decides, tags included: calibre's UA sheet gives <u>/<ins> and
+        # <s>/<strike>/<del> their lines, and a book's `none` takes them
+        # away (pg40739's `ins { text-decoration: none }`, #360 review).
+        lines = str(own_css["text-decoration"] or "").split()
+    else:
+        lines = []
+        if local in _UNDERLINE_TAGS:
+            lines.append("underline")
+        if local in _STRIKE_TAGS:
+            lines.append("line-through")
+    if "underline" in lines:
+        cur.add(FLAG_UNDERLINE)
+    if "line-through" in lines:
+        cur.add(FLAG_STRIKE)
     if style_resolver is not None and not is_root:
         css = own_css
         if css:

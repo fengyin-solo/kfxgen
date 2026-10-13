@@ -191,3 +191,33 @@ def test_a_struck_link_keeps_its_line(tmp_path):
         '<p id="t">Target.</p><p>See <a href="chapter_1.xhtml#t"><s>old</s></a>.</p>',
     )
     assert found["old"][0] == "$328"
+
+
+def _ua_resolver(rules):
+    """calibre's `.get()` includes its UA sheet (html.css gives u/ins
+    underline and s/strike/del line-through), and a book's rule overrides it
+    (#360 review)."""
+    ua = {"u": "underline", "ins": "underline", "s": "line-through"}
+    ua.update({"del": "line-through", "strike": "line-through"})
+
+    def resolve(elem):
+        tag = etree.QName(elem).localname
+        own = rules.get(elem.get("class") or "", ua.get(tag))
+        return {"text-decoration": None if own == "none" else own}
+
+    return resolve
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("tag", "flag"), [("ins", UNDER), ("u", UNDER), ("del", STRIKE), ("s", STRIKE)]
+)
+def test_a_tag_whose_css_says_none_has_no_line(tag, flag):
+    """pg40739: `ins { text-decoration: none }`; a browser draws no line."""
+    body = f'<p>a <{tag} class="no">fixed</{tag}> b</p>'
+    assert _runs(body, flag, _ua_resolver({"no": "none"})) == []
+
+
+@pytest.mark.unit
+def test_a_bare_tag_takes_its_line_from_the_ua_sheet():
+    assert _runs("<p>a <ins>new</ins> b</p>", UNDER, _ua_resolver({})) == ["new"]

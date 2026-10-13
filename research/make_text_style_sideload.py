@@ -39,7 +39,8 @@ each entry from the TOC:
        the cell "slanted note" is italic. Old: all regular.
   2. "2. Strike-through and underline":
      - "struck with s" and "deleted with del" have a line through them;
-       "underlined with u" and "inserted with ins" are underlined.
+       "underlined with u" and "inserted with ins" are underlined, and
+       "an ins set to none" is not.
      - "struck by CSS" has a line through it, "underlined by CSS" is
        underlined, and "both lines" has both.
      - The whole paragraph "A whole underlined paragraph..." is underlined,
@@ -91,6 +92,7 @@ span.lt { text-decoration: line-through; }
 .ul { text-decoration: underline; }
 span.both { text-decoration: underline line-through; }
 span.none { text-decoration: none; }
+ins.plain { text-decoration: none; }
 """
 
 FONT_CSS = (
@@ -124,7 +126,8 @@ PAGES = [
     (
         "2. Strike-through and underline",
         "<p>Tags: <s>struck with s</s>, <del>deleted with del</del>, "
-        "<u>underlined with u</u>, <ins>inserted with ins</ins>.</p>"
+        "<u>underlined with u</u>, <ins>inserted with ins</ins>, and "
+        '<ins class="plain">an ins set to none</ins>.</p>'
         '<p>CSS: <span class="lt">struck by CSS</span>, '
         '<span class="ul">underlined by CSS</span> and '
         '<span class="both">both lines</span>.</p>'
