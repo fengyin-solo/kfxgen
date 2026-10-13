@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Build sideload A/B pairs for text styles set by CSS (#312).
+"""Build sideload A/B pairs for text styles: CSS bold and italic (#312),
+strike-through and underline (#237).
 
 One invented source book, made twice: once with no fonts, and once embedding
 Charis SIL on <body>. A bold or italic run has to match an embedded face, so
@@ -36,6 +37,19 @@ each entry from the TOC:
        "a span" included: regular in Text Styles, bold in Text Styles Fonts.
      - In the table, the header cells "Harbour" and "Lamps" are bold, and
        the cell "slanted note" is italic. Old: all regular.
+  2. "2. Strike-through and underline":
+     - "struck with s" and "deleted with del" have a line through them;
+       "underlined with u" and "inserted with ins" are underlined.
+     - "struck by CSS" has a line through it, "underlined by CSS" is
+       underlined, and "both lines" has both.
+     - The whole paragraph "A whole underlined paragraph..." is underlined,
+       "a span set to none" included.
+     - "Plain text with no lines." has none.
+     - Links: "underlined by CSS" is underlined. "a plain link" looks as
+       links always do on this Kindle. "a struck link" has a line through
+       it (Kindle Previewer drops that line; kfxgen keeps it). Tapping each
+       one goes to "Plain text with no lines.".
+     Old: no lines anywhere in this chapter.
 """
 
 import argparse
@@ -73,6 +87,10 @@ p.hi { font-style: italic; }
 p.wb { font-weight: bold; }
 span.n700 { font-weight: 700; }
 p.n600 { font-weight: 600; }
+span.lt { text-decoration: line-through; }
+.ul { text-decoration: underline; }
+span.both { text-decoration: underline line-through; }
+span.none { text-decoration: none; }
 """
 
 FONT_CSS = (
@@ -102,6 +120,20 @@ PAGES = [
         '<tr><td>north wall</td><td><p class="hi">slanted note</p></td></tr>'
         "<tr><td>south wall</td><td>twelve</td></tr></table>"
         "<p>Below the table.</p>",
+    ),
+    (
+        "2. Strike-through and underline",
+        "<p>Tags: <s>struck with s</s>, <del>deleted with del</del>, "
+        "<u>underlined with u</u>, <ins>inserted with ins</ins>.</p>"
+        '<p>CSS: <span class="lt">struck by CSS</span>, '
+        '<span class="ul">underlined by CSS</span> and '
+        '<span class="both">both lines</span>.</p>'
+        '<p class="ul">A whole underlined paragraph with '
+        '<span class="none">a span set to none</span> inside it.</p>'
+        '<p id="plain">Plain text with no lines.</p>'
+        '<p>Links: <a class="ul" href="chapter_2.xhtml#plain">underlined by CSS</a>, '
+        '<a href="chapter_2.xhtml#plain">a plain link</a> and '
+        '<a href="chapter_2.xhtml#plain"><s>a struck link</s></a>.</p>',
     ),
 ]
 
@@ -137,14 +169,14 @@ def build_source(out_dir, fonts):
 
 
 def _styled_text(kfx):
-    """{"bold": [...], "italic": [...]}: the text of each run whose applied
-    style is bold or italic, in reading order."""
+    """{"bold": [...], ...}: the text of each run whose applied style is
+    bold, italic, underlined or struck through, in reading order."""
     frags = load_fragments(kfx)
     styles = {str(f.fid): val(f) for f in by_type(frags, "$157")}
     texts = {}
     for f in by_type(frags, "$145"):
         texts[str(f.fid)] = list(val(f)["$146"])
-    out = {"bold": [], "italic": []}
+    out = {"bold": [], "italic": [], "underline": [], "strike": []}
     for st in by_type(frags, "$259"):
         for e in iter_entries(val(st)["$146"]):
             ref = e.get("$145")
@@ -159,6 +191,10 @@ def _styled_text(kfx):
                     out["bold"].append(text[start : start + length])
                 if str(s.get("$12")) == "$382":
                     out["italic"].append(text[start : start + length])
+                if str(s.get("$23")) == "$328":
+                    out["underline"].append(text[start : start + length])
+                if str(s.get("$27")) == "$328":
+                    out["strike"].append(text[start : start + length])
     return out
 
 
