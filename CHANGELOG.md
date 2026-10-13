@@ -1,5 +1,46 @@
 # Changelog
 
+## 5.12.0 — Bold, italic, lines and code from the book's CSS
+
+The changes since 5.11.1, each reviewed and converted through real calibre.
+The text-style changes (#312, #237, #242) were compared before and after on
+the Gutenberg 90 and a 50-book library sample, with body text identical in
+all 140 books. All five were checked on the Voyage (5.13.6).
+
+**Bold and italic set by CSS (#312).** A span made bold or italic by the
+book's stylesheet (`span.Strong { font-weight: bold }`) came out regular, and
+so did the only paragraph in a table cell, such as a styled column heading.
+They are now bold and italic, with or without embedded fonts. CSS that sets
+text back to normal inside bold or italic is followed too: pg100's character
+names, set upright inside italic stage directions, are upright again (1,056
+of them). A weight written as a number (`font-weight: 700`) was read as
+normal everywhere, because calibre reports it converted (as 299.197); it now
+counts as bold.
+
+**Strike-through and underline (#237).** `<s>`, `<del>`, `<strike>` and CSS
+`line-through` came out as plain text, so crossed-out words read as meant;
+`<u>`, `<ins>` and CSS `underline` lost their line. Both are now drawn, as
+Kindle Previewer writes them. A book's `text-decoration: none` is followed,
+so Gutenberg's transcriber corrections (`<ins>` with no line in its CSS) stay
+plain. Links that a book's CSS underlines, as Gutenberg's stylesheet does,
+are now underlined, as in Previewer's output.
+
+**Monospace for code (#242).** `<code>`, `<kbd>`, `<samp>`, `<tt>`, `<pre>`
+and CSS `font-family: monospace` came out in the body font, so a command read
+like an ordinary word. They now use the Kindle's fixed-width font, or the
+book's own embedded code font when it has one. Gutenberg verse that its CSS
+sets fixed-width (`.pgmonospaced`) is now fixed-width too, as in a browser.
+
+**Pictures that are links (#355).** Tapping a picture wrapped in a link
+turned the page; it now follows the link, so a thumbnail opens its full-size
+picture, with Back returning to it. In pg12082, all 237 linked pictures now
+land on their target.
+
+**Books of pictures only (#357).** A book with no text declared a text
+capability anyway, which KFX Input reported as a structure error. It now
+declares none, as KFX Input's own conversion does. Books with text are
+unchanged: the Gutenberg 90 convert byte-identical.
+
 ## 5.11.1 — Long paragraphs, reading progress and chapter titles
 
 The changes since 5.11.0, each reviewed and converted through real calibre,
