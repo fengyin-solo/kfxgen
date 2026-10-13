@@ -864,12 +864,19 @@ def _walk_inline(
         if parent_emphasis is None and elem.getparent() is not None:
             parent_emphasis = _css_emphasis(style_resolver(elem.getparent()))
         if emphasis is not None and parent_emphasis is not None:
-            for flag, now, before in zip(
-                (FLAG_BOLD, FLAG_ITALIC), emphasis, parent_emphasis
+            for flag, prop, now, before in zip(
+                (FLAG_BOLD, FLAG_ITALIC),
+                ("font-weight", "font-style"),
+                emphasis,
+                parent_emphasis,
             ):
                 if now and not before:
                     cur.add(flag)
-                elif before and not now:
+                elif not now and (before or prop in own_css):
+                    # Normal here: under bold, or a <b>/<i> whose CSS says
+                    # normal (#362). Bold the element shares with its
+                    # parent stays the tag's: a no-font book writes no
+                    # block bold (#34).
                     cur.discard(flag)
             if emphasis[2] != parent_emphasis[2]:
                 # Monospace starts, ends, or changes family (#242).

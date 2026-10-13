@@ -237,3 +237,55 @@ def test_a_numeric_normal_weight_inside_bold_is_not_bold():
     )
     span = _doc('<p class="b"><span class="n">x</span></p>').find(".//{*}span")
     assert _conv._css_emphasis(resolve(span))[0] is False
+
+
+# --- A tag's bold or italic reset by CSS (#362) ---------------------------
+
+RESET = dict(CSS, nw={"font-weight": "normal"}, ns={"font-style": "normal"})
+
+
+def _reset_para(body, resolver=None):
+    resolver = resolver if resolver is not None else _resolver(RESET)
+    (block,) = _conv.extract_blocks_from_html(_doc(body), style_resolver=resolver)
+    return block["text"], block["spans"]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("tag", ["b", "strong"])
+def test_a_bold_tag_set_to_normal_weight_is_not_bold(tag):
+    text, spans = _reset_para(f'<p>a <{tag} class="nw">reset</{tag}> b</p>')
+    assert _runs(text, spans, BOLD) == []
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("tag", ["i", "em", "cite"])
+def test_an_italic_tag_set_to_normal_style_is_not_italic(tag):
+    text, spans = _reset_para(f'<p>a <{tag} class="ns">reset</{tag}> b</p>')
+    assert _runs(text, spans, ITALIC) == []
+
+
+@pytest.mark.unit
+def test_a_bold_tag_inside_a_css_bold_paragraph_is_still_a_run():
+    """The paragraph's own bold is written only with embedded fonts (#34),
+    so the tag's run is what keeps `x` bold in a book without them."""
+    text, spans = _reset_para('<p class="hb">plain <b>x</b></p>')
+    assert _runs(text, spans, BOLD) == ["x"]
+
+
+@pytest.mark.unit
+def test_tags_without_a_stylizer_keep_their_emphasis():
+    text, spans = _reset_para(
+        "<p>a <b>bold</b> and <i>slanted</i> b</p>", resolver=lambda e: None
+    )
+    assert _runs(text, spans, BOLD) == ["bold"]
+    assert _runs(text, spans, ITALIC) == ["slanted"]
+
+
+@pytest.mark.unit
+def test_a_resolver_that_reports_no_weight_leaves_a_tag_bold():
+    """A resolver that knows nothing about weight (only vertical-align, say)
+    must not take a tag's bold away."""
+    text, spans = _reset_para(
+        "<p>a <b>bold</b> b</p>", resolver=lambda e: {"vertical-align": None}
+    )
+    assert _runs(text, spans, BOLD) == ["bold"]
