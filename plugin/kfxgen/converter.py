@@ -20,6 +20,7 @@ from ._img_tokens import (
     IMG_TOKEN_RE as _IMG_TOKEN_RE,
     IMG_TOKEN_SPACE as _IMG_TOKEN_SPACE,
 )
+from .font_table import BOLD_WEIGHT_THRESHOLD, parse_style, parse_weight
 from .image_optimize import GIF_SIGNATURES, gif_to_png, optimize_images
 from .inline_style import (
     FLAG_BOLD,
@@ -123,6 +124,17 @@ def _computed_value(style, prop):
         return style.get(prop)
 
 
+def _specified_inherited(stylizer, elem, prop):
+    """The value `prop` was given on `elem` or its nearest ancestor that sets
+    it, as written: CSS inheritance without calibre's computed conversion."""
+    while elem is not None:
+        value = stylizer.style(elem).get(prop)
+        if value and str(value).strip().lower() != "inherit":
+            return value
+        elem = elem.getparent() if hasattr(elem, "getparent") else None
+    return None
+
+
 def _default_stylizer(oeb_book, item):
     # Single source of the Stylizer signature lives in font_table (#41).
     from .font_table import build_stylizer  # noqa: PLC0415
@@ -162,7 +174,10 @@ def _build_style_resolver(oeb_book, item, log, stylizer_factory=None):
                     # font-family/-weight/-style are also inherited, usually set
                     # on <body> and inherited by paragraphs.
                     "font-family": _computed_value(st, "font-family"),
-                    "font-weight": _computed_value(st, "font-weight"),
+                    # Not the computed value: calibre passes a numeric weight
+                    # through a unit conversion (700 comes back as 299.197),
+                    # which then read as normal (#312).
+                    "font-weight": _specified_inherited(stylizer, elem, "font-weight"),
                     "font-style": _computed_value(st, "font-style"),
                     # vertical-align does NOT inherit, so .get() is right here:
                     # it returns the declared value, or None when the element
@@ -666,6 +681,17 @@ def _is_preformatted(elem, style_resolver):
     return FLAG_PRE in _white_space_flags(elem, style_resolver, frozenset())
 
 
+def _css_emphasis(css):
+    """(bold, italic) from an element's computed CSS, or None without it.
+    `bolder` is relative, but from any weight a book uses it lands on bold
+    (`lighter` reads as normal already)."""
+    if not css:
+        return None
+    weight = str(css.get("font-weight") or "").strip().lower()
+    bold = weight == "bolder" or parse_weight(weight) >= BOLD_WEIGHT_THRESHOLD
+    return bold, parse_style(css.get("font-style"))
+
+
 #: In `_walk_inline(split_tables=True)`, stands in for a table nested in the
 #: row being walked, as `(_TABLE_SPLIT, <table>)`; the caller splits there.
 _TABLE_SPLIT = object()
@@ -703,6 +729,7 @@ def _walk_inline(
     is_root=True,
     base_href=None,
     split_tables=False,
+    parent_emphasis=None,
 ):
     """Yield (segment, flags) pairs for inline content, accumulating italic/
     bold from ancestor <em>/<i>/<strong>/<b> and superscript/subscript from
@@ -712,7 +739,11 @@ def _walk_inline(
     `style_resolver` (elem -> css dict|None) is consulted only for inline
     descendants, never for the block element itself: a paragraph carrying
     `vertical-align` would otherwise turn its whole text into one raised
-    run. (#52)"""
+    run. (#52) The block's own computed bold and italic are read only to
+    compare its children with: a child whose CSS weight or style differs
+    from its parent's starts or ends that run. The block's own emphasis is
+    the block's to write (#312). `parent_emphasis` is the parent's, passed
+    down so each element is resolved once."""
     if not isinstance(elem.tag, str):
         # A comment or a processing instruction: lxml gives it a `.text`, but
         # it is markup, not content ("H2 anchor", a <?dp n="12"?> page
@@ -746,6 +777,7 @@ def _walk_inline(
                     is_root=False,
                     base_href=base_href,
                     split_tables=split_tables,
+                    parent_emphasis=parent_emphasis,
                 )
             )
         return parts
@@ -768,14 +800,28 @@ def _walk_inline(
             cur = {f for f in cur if not _is_link_flag(f)}
             cur.add(make_link_flag(target))
     css = None
+    emphasis = None
+    if style_resolver is not None:
+        own_css = style_resolver(elem)
+        emphasis = _css_emphasis(own_css)
     if style_resolver is not None and not is_root:
-        css = style_resolver(elem)
+        css = own_css
         if css:
             shift = parse_vertical_align(css.get("vertical-align"))
             if shift == "super":
                 cur.add(FLAG_SUPER)
             elif shift == "sub":
                 cur.add(FLAG_SUB)
+        if parent_emphasis is None and elem.getparent() is not None:
+            parent_emphasis = _css_emphasis(style_resolver(elem.getparent()))
+        if emphasis is not None and parent_emphasis is not None:
+            for flag, now, before in zip(
+                (FLAG_BOLD, FLAG_ITALIC), emphasis, parent_emphasis
+            ):
+                if now and not before:
+                    cur.add(flag)
+                elif before and not now:
+                    cur.discard(flag)
     cur = frozenset(cur)
     parts = []
     # A <span> drawn as a block, one per line of verse, an address, a
@@ -845,6 +891,7 @@ def _walk_inline(
                     is_root=False,
                     base_href=base_href,
                     split_tables=split_tables,
+                    parent_emphasis=emphasis,
                 )
             )
             parts.append((" ", frozenset()))
@@ -857,6 +904,7 @@ def _walk_inline(
                     is_root=False,
                     base_href=base_href,
                     split_tables=split_tables,
+                    parent_emphasis=emphasis,
                 )
             )
         if child.tail:
