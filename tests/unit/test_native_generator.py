@@ -5528,3 +5528,44 @@ def test_a_picture_takes_one_position_between_locations(tmp_path):
     # location is the last paragraph's first character.
     assert kinds == ["$269", "$271", "$269"]
     assert locs[1] == (int(entries[2]["$155"]), 0)
+
+
+@pytest.mark.unit
+def test_a_location_on_a_link_container_is_the_containers(tmp_path):
+    """A linked picture's container takes no position of its own (#355). When a
+    location falls on it, kfxlib's generate_approximate_locations puts the
+    location on the container, not on the picture that shares its position."""
+    from kfxgen.inline_style import make_link_flag
+
+    pic = _pic("a.png")
+    linked = _para(pic)
+    linked["spans"] = [(0, len(pic), frozenset({make_link_flag("c.xhtml#t")}))]
+    chapter = _plain_chapter(109)
+    chapter["blocks"] = [
+        *chapter["blocks"],
+        linked,
+        _para("y" * 50, ("c.xhtml#t",)),
+    ]
+    out = tmp_path / "pic.kfx"
+    NativeKFXGenerator().generate_full_book(
+        title="T",
+        author="A",
+        chapters=[chapter],
+        output_path=str(out),
+        images={"a.png": MINIMAL_JPEG},
+    )
+    frags = load_fragments(out)
+    entries = [
+        e for st in by_type(frags, "$259") for e in iter_entries(val(st)["$146"])
+    ]
+    locs = [
+        (int(loc["$155"]), int(loc["$143"]))
+        for f in by_type(frags, "$550")
+        for group in val(f)
+        for loc in group["$182"]
+    ]
+    # Section at 0, text 1-109, then the container and its picture both at
+    # 110: the second location is the container's.
+    assert [str(e["$159"]) for e in entries] == ["$269", "$269", "$271", "$269"]
+    assert entries[1].get("$142")
+    assert locs[1] == (int(entries[1]["$155"]), 0)

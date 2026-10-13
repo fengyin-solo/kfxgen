@@ -103,6 +103,9 @@ _TABLE_NODE_TYPES = {
     # A bordered or filled container around paragraphs, as Kindle Previewer
     # writes a sidebar or callout (#238).
     "box": "$270",
+    # A container around a linked picture: its $142 link covers the picture
+    # (#355), as Kindle Previewer writes `<a href><img/></a>`.
+    "link": "$269",
 }
 
 #: Overrides retired by #123. Warned about rather than ignored: a variable that
@@ -675,6 +678,11 @@ def place_locations(sections):
         pid = next_location = 0
         for eid, length in entries:
             if length <= 0:
+                # A link container shares its picture's position (#355): a
+                # location falling there is the container's, as in kfxlib.
+                if next_location == pid:
+                    locations.append((eid, 0))
+                    next_location += POSITIONS_PER_LOCATION
                 continue
             while next_location < pid + length:
                 locations.append((eid, next_location - pid))
@@ -833,6 +841,19 @@ def _safe_write_bytes(path, data):
             pass
         raise
     os.replace(tmp, path)
+
+
+def _picture_link(at, spans):
+    """The link flags of the span covering a picture's token at `at`, or None
+    (#355). Only the link: emphasis has nothing to draw on a picture."""
+    from .inline_style import link_target
+
+    for start, length, flags in spans:
+        if start <= at < start + length:
+            link = frozenset(f for f in flags if link_target({f}))
+            if link:
+                return link
+    return None
 
 
 def _may_fall_back_by_basename(href, resolved_image_refs):
@@ -1760,6 +1781,7 @@ class NativeKFXGenerator:
         entries_265_raw = []
         char_offset = 0
         location_sections = []
+        link_positions = set()  # link containers: zero length (#355)
 
         for ch_idx in range(len(chapters)):
             start, end = chapter_chunk_ranges[ch_idx]
@@ -1775,7 +1797,13 @@ class NativeKFXGenerator:
                 kind = chunk.get("type") if isinstance(chunk, dict) else "text"
                 if kind == "close":
                     continue  # ends a container; takes no position (#219)
-                if kind in ("image", "open", "rule"):
+                if kind == "open" and chunk.get("node") == "link":
+                    # Its inline picture starts at the same position, as
+                    # kfxlib counts a container whose first child is inline
+                    # (#355).
+                    chunk_text_len = 0
+                    link_positions.add(chunk_positions[chunk_idx])
+                elif kind in ("image", "open", "rule"):
                     # synthetic; an image, a rule or a container takes one
                     # offset slot
                     chunk_text_len = 1
@@ -1790,11 +1818,18 @@ class NativeKFXGenerator:
 
         entries_265_raw.sort(key=lambda x: x[0])
         # Deduplicate entries with same $184 char-offset (rare with text-
-        # only entries — only fires for adjacent zero-length chunks).
+        # only entries — only fires for adjacent zero-length chunks). A link
+        # container and its picture share an offset, and both are listed, as
+        # Kindle Previewer lists them (#355).
         seen_offsets = set()
         deduped = []
         for entry in entries_265_raw:
-            if entry[0] not in seen_offsets:
+            shares_link = (
+                bool(deduped)
+                and deduped[-1][0] == entry[0]
+                and deduped[-1][1] in link_positions
+            )
+            if entry[0] not in seen_offsets or shares_link:
                 seen_offsets.add(entry[0])
                 deduped.append(entry)
         entries_265_raw = deduped
@@ -2584,6 +2619,10 @@ class NativeKFXGenerator:
                     del entry[IS("$157")]
                 if resource_name:
                     entry[IS("$175")] = IS(resource_name)
+                if spec.get("inline"):
+                    # In a link's container: an inline picture, the one
+                    # position its link covers (#355).
+                    entry[IS("$601")] = IS("$283")
                 # Image entries hold no text, so they carry no content
                 # reference — their slot in content_refs is None.
                 if first_leaf:
@@ -3498,7 +3537,12 @@ class NativeKFXGenerator:
                 ):
                     resource = image_resources.get(bare.rsplit("/", 1)[-1])
                 if resource is not None:
-                    chunk = {"type": "image", "resource": resource[0], "alt": alt}
+                    chunk = {
+                        "type": "image",
+                        "resource": resource[0],
+                        "alt": alt,
+                        "at": m.start(),
+                    }
                     if m.group(3):
                         chunk["size"] = m.group(3)  # the markup's own size
                     chunks.append(chunk)
@@ -3597,7 +3641,17 @@ class NativeKFXGenerator:
                         block_anchor_keys = [
                             k for k in block_anchor_keys if k not in set(at_start)
                         ]
+                    link = _picture_link(chunk.pop("at"), para_spans)
+                    if link:
+                        # A linked picture: a container whose link covers
+                        # the picture, as Kindle Previewer writes it (#355).
+                        all_chunks.append(
+                            {"type": "open", "node": "link", "spans": [(0, 1, link)]}
+                        )
+                        chunk["inline"] = True
                     all_chunks.append(chunk)
+                    if link:
+                        all_chunks.append({"type": "close"})
                 else:
                     placed = _append_text_with_spans(
                         chunk["text"],
@@ -3794,9 +3848,12 @@ class NativeKFXGenerator:
                                 first = len(all_chunks)
                                 unplaced += _emit_paragraph(para)
                                 for ch in all_chunks[first:]:
-                                    if ch["type"] == "image":
+                                    if (
+                                        ch["type"] == "image"
+                                        or ch.get("node") == "link"
+                                    ):
                                         ch["in_cell"] = True
-                                    else:
+                                    elif ch["type"] == "text":
                                         ch["in_header_cell"] = cell_info["header"]
                                 continue
                             all_chunks.append(
@@ -4591,6 +4648,27 @@ class NativeKFXGenerator:
                         else None
                     )
                     extras = {"$152": widths} if widths else {}
+                    if node == "link":
+                        # A linked picture (#355): the link covers the one
+                        # position the inline picture takes. The container
+                        # centres the picture, as `$580` does a block one; in
+                        # a cell it has no style, as the picture has none.
+                        ((_s, _length, flags),) = chunk["spans"]
+                        anchor = body_anchor_map.get(_link_target(flags))
+                        if anchor:
+                            extras["$142"] = [
+                                IonStruct(
+                                    IS("$143"), 0, IS("$144"), 1, IS("$179"), IS(anchor)
+                                )
+                            ]
+                        if not chunk.get("in_cell"):
+                            extras["$157"] = IS(
+                                _allocate_style(
+                                    "",
+                                    font_size=chapters[ch_idx].get("font_size", 1.0),
+                                    align="center",
+                                )
+                            )
                     if node == "box":
                         box = chunk["box"]
                         extras["$157"] = IS(
@@ -4647,7 +4725,11 @@ class NativeKFXGenerator:
                     entry_link_text_lengths.append(None)
                     entry_kinds.append("image")
                     entry_image_specs.append(
-                        {"resource": chunk["resource"], "alt": chunk.get("alt", "")}
+                        {
+                            "resource": chunk["resource"],
+                            "alt": chunk.get("alt", ""),
+                            "inline": bool(chunk.get("inline")),
+                        }
                     )
                     entry_emphasis_spans.append(None)
                     continue
