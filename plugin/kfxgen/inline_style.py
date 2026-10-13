@@ -263,6 +263,58 @@ def make_link_flag(target):
     return (LINK_FLAG, target)
 
 
+MONO_FLAG = "mono"
+
+#: Monospace families a book names without the generic `monospace` after them.
+_MONOSPACE_NAMES = frozenset(
+    {
+        "courier",
+        "courier new",
+        "consolas",
+        "menlo",
+        "monaco",
+        "lucida console",
+        "lucida sans typewriter",
+        "andale mono",
+        "dejavu sans mono",
+        "liberation mono",
+        "source code pro",
+        "inconsolata",
+        "fira mono",
+        "fira code",
+        "ubuntu mono",
+        "roboto mono",
+        "noto sans mono",
+        "droid sans mono",
+        "sf mono",
+        "pt mono",
+    }
+)
+
+
+def is_monospace(families):
+    """Whether a parsed font-family list draws monospace text: it names the
+    generic `monospace`, or its first family is a known monospace face."""
+    families = list(families or [])
+    return "monospace" in families or (
+        bool(families) and families[0] in _MONOSPACE_NAMES
+    )
+
+
+def make_mono_flag(families):
+    """The flag-set member marking a run monospace in `families` (#242). The
+    families travel with it, so an embedded face can still be matched."""
+    return (MONO_FLAG, tuple(families))
+
+
+def mono_families(flags):
+    """The families a run's monospace flag carries, or None."""
+    for flag in flags:
+        if isinstance(flag, tuple) and len(flag) == 2 and flag[0] == MONO_FLAG:
+            return flag[1]
+    return None
+
+
 def link_target(flags):
     """Return the link target carried by a run's flag set, or None."""
     for flag in flags:

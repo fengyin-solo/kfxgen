@@ -33,9 +33,13 @@ from .inline_style import (
     FLAG_UNDERLINE,
     HARD_BREAK,
     LINE_START,
+    _parse_font_family,
     compute_block_style,
+    is_monospace,
     make_anchor_mark,
     make_link_flag,
+    make_mono_flag,
+    mono_families,
     normalize_runs_with_anchors,
     parse_css_length,
     parse_vertical_align,
@@ -48,6 +52,8 @@ _SUPER_TAGS = {"sup"}
 _SUB_TAGS = {"sub"}
 _UNDERLINE_TAGS = {"u", "ins"}
 _STRIKE_TAGS = {"s", "strike", "del"}
+#: Monospace without a stylizer; with one, calibre's UA sheet says so (#242).
+_MONO_TAGS = {"code", "kbd", "samp", "tt"}
 
 # Table cells run together without this. A table that is not laid out natively
 # (#219, #251) has each row as one paragraph, its cells inline text within it, so the
@@ -706,14 +712,17 @@ def _is_preformatted(elem, style_resolver):
 
 
 def _css_emphasis(css):
-    """(bold, italic) from an element's computed CSS, or None without it.
+    """(bold, italic, monospace families or None) from an element's computed
+    CSS, or None without it.
     `bolder` is relative, but from any weight a book uses it lands on bold
     (`lighter` reads as normal already)."""
     if not css:
         return None
     weight = str(css.get("font-weight") or "").strip().lower()
     bold = weight == "bolder" or parse_weight(weight) >= BOLD_WEIGHT_THRESHOLD
-    return bold, parse_style(css.get("font-style"))
+    families = tuple(_parse_font_family(css.get("font-family")))
+    mono = families if is_monospace(families) else None
+    return bold, parse_style(css.get("font-style")), mono
 
 
 #: In `_walk_inline(split_tables=True)`, stands in for a table nested in the
@@ -824,6 +833,7 @@ def _walk_inline(
             cur = {f for f in cur if not _is_link_flag(f)}
             cur.add(make_link_flag(target))
     css = None
+    own_css = None
     emphasis = None
     if style_resolver is not None:
         own_css = style_resolver(elem)
@@ -861,6 +871,13 @@ def _walk_inline(
                     cur.add(flag)
                 elif before and not now:
                     cur.discard(flag)
+            if emphasis[2] != parent_emphasis[2]:
+                # Monospace starts, ends, or changes family (#242).
+                cur = {f for f in cur if mono_families((f,)) is None}
+                if emphasis[2]:
+                    cur.add(make_mono_flag(emphasis[2]))
+    if local in _MONO_TAGS and "font-family" not in (own_css or {}):
+        cur.add(make_mono_flag(("monospace",)))
     cur = frozenset(cur)
     parts = []
     # A <span> drawn as a block, one per line of verse, an address, a

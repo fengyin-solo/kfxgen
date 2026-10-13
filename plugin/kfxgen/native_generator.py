@@ -4546,7 +4546,17 @@ class NativeKFXGenerator:
             FLAG_SUB,
             FLAG_SUPER,
             FLAG_UNDERLINE,
+            is_monospace,
+            mono_families,
         )
+
+        def _family(family_list, bold, italic):
+            # An embedded face wins; with none, monospace text is written
+            # "monospace", as Kindle Previewer writes it (#242).
+            fam = self.font_table.match(family_list, bold, italic)
+            if not fam and is_monospace(family_list):
+                return "monospace"
+            return fam
 
         # Block-level emphasis (CSS `font-weight`/`font-style` on the paragraph)
         # is composed with inline-run flags only when the book embeds fonts, so
@@ -4564,7 +4574,8 @@ class NativeKFXGenerator:
             # drive synthetic rendering -> byte-identical to today's output.
             bold = (FLAG_BOLD in flags) or blk_bold
             italic = (FLAG_ITALIC in flags) or blk_italic
-            fam = self.font_table.match(family_list, bold, italic)
+            mono = mono_families(flags)
+            fam = _family(list(mono) if mono else family_list, bold, italic)
             attrs = {"italic": italic, "bold": bold}
             if fam:
                 attrs["font_family"] = fam
@@ -4592,9 +4603,7 @@ class NativeKFXGenerator:
             blk_bold = bool(bs.get("bold")) if has_fonts else False
             blk_italic = bool(bs.get("italic")) if has_fonts else False
             cell_bold = bool(cell["header"]) or blk_bold
-            cell_fam = self.font_table.match(
-                bs.get("font_family", []), bold=cell_bold, italic=blk_italic
-            )
+            cell_fam = _family(bs.get("font_family", []), cell_bold, blk_italic)
             cattrs = {
                 "align": bs.get("align") or ("center" if cell["header"] else None),
                 "bold": cell_bold,
@@ -4794,9 +4803,7 @@ class NativeKFXGenerator:
                         # cell's own text is (#261).
                         blk_bold = True
                         attrs["bold"] = True
-                    fam = self.font_table.match(
-                        bs.get("font_family", []), bold=blk_bold, italic=blk_italic
-                    )
+                    fam = _family(bs.get("font_family", []), blk_bold, blk_italic)
                     if fam:
                         attrs["font_family"] = fam
                         if blk_bold:
@@ -4843,7 +4850,7 @@ class NativeKFXGenerator:
                             FLAG_UNDERLINE,
                             FLAG_STRIKE,
                         )
-                    )
+                    ) or bool(mono_families(flags))
                     style = (
                         _emphasis_style(
                             flags,
