@@ -815,7 +815,9 @@ def _walk_inline(
             href = _resolve_img_src(base_href, child.get("src", "") or "")
             alt = child.get("alt", "") or ""
             size = _img_size_hint(child, style_resolver)
-            parts.append((_make_img_token(href, alt, size), frozenset()))
+            # Only a link carries over: tapping the picture follows it (#355).
+            link = frozenset(f for f in cur if _is_link_flag(f))
+            parts.append((_make_img_token(href, alt, size), link))
         elif clocal == "svg":
             for aid in _own_anchor_ids(child):
                 parts.append(make_anchor_mark(aid))
