@@ -27,8 +27,10 @@ from .inline_style import (
     FLAG_ITALIC,
     FLAG_PRE,
     FLAG_PRE_LINE,
+    FLAG_STRIKE,
     FLAG_SUB,
     FLAG_SUPER,
+    FLAG_UNDERLINE,
     HARD_BREAK,
     LINE_START,
     compute_block_style,
@@ -44,6 +46,8 @@ _ITALIC_TAGS = {"em", "i"}
 _BOLD_TAGS = {"strong", "b"}
 _SUPER_TAGS = {"sup"}
 _SUB_TAGS = {"sub"}
+_UNDERLINE_TAGS = {"u", "ins"}
+_STRIKE_TAGS = {"s", "strike", "del"}
 
 # Table cells run together without this. A table that is not laid out natively
 # (#219, #251) has each row as one paragraph, its cells inline text within it, so the
@@ -135,6 +139,21 @@ def _specified_inherited(stylizer, elem, prop):
     return None
 
 
+_DECORATION_LINES = {"underline", "line-through"}
+
+
+def _decoration_lines(stylizer, elem):
+    """The decoration lines drawn through `elem`'s text, as one string, or
+    None. A descendant's `none` can't take an ancestor's line away."""
+    lines = set()
+    while elem is not None:
+        style = stylizer.style(elem)
+        for prop in ("text-decoration", "text-decoration-line"):
+            lines.update(str(style.get(prop) or "").lower().split())
+        elem = elem.getparent() if hasattr(elem, "getparent") else None
+    return " ".join(sorted(lines & _DECORATION_LINES)) or None
+
+
 def _default_stylizer(oeb_book, item):
     # Single source of the Stylizer signature lives in font_table (#41).
     from .font_table import build_stylizer  # noqa: PLC0415
@@ -178,6 +197,11 @@ def _build_style_resolver(oeb_book, item, log, stylizer_factory=None):
                     # through a unit conversion (700 comes back as 299.197),
                     # which then read as normal (#312).
                     "font-weight": _specified_inherited(stylizer, elem, "font-weight"),
+                    # Gathered from the element and its ancestors: a line is
+                    # drawn through all the text inside the element that
+                    # sets it, and calibre's `.get()` is the element's own
+                    # (#237).
+                    "text-decoration": _decoration_lines(stylizer, elem),
                     "font-style": _computed_value(st, "font-style"),
                     # vertical-align does NOT inherit, so .get() is right here:
                     # it returns the declared value, or None when the element
@@ -804,6 +828,21 @@ def _walk_inline(
     if style_resolver is not None:
         own_css = style_resolver(elem)
         emphasis = _css_emphasis(own_css)
+    if style_resolver is not None and "text-decoration" in (own_css or {}):
+        # CSS decides, tags included: calibre's UA sheet gives <u>/<ins> and
+        # <s>/<strike>/<del> their lines, and a book's `none` takes them
+        # away (pg40739's `ins { text-decoration: none }`, #360 review).
+        lines = str(own_css["text-decoration"] or "").split()
+    else:
+        lines = []
+        if local in _UNDERLINE_TAGS:
+            lines.append("underline")
+        if local in _STRIKE_TAGS:
+            lines.append("line-through")
+    if "underline" in lines:
+        cur.add(FLAG_UNDERLINE)
+    if "line-through" in lines:
+        cur.add(FLAG_STRIKE)
     if style_resolver is not None and not is_root:
         css = own_css
         if css:

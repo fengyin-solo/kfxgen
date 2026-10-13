@@ -13,6 +13,9 @@ FLAG_ITALIC = "italic"
 FLAG_BOLD = "bold"
 FLAG_SUPER = "super"
 FLAG_SUB = "sub"
+#: Text decoration lines (#237). Kindle Previewer writes them as $23 and $27.
+FLAG_UNDERLINE = "underline"
+FLAG_STRIKE = "line-through"
 
 #: White-space modes, carried on a segment's flags by the converter and read
 #: by `normalize_runs_with_anchors`, which removes them again: they choose how

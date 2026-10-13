@@ -1992,6 +1992,7 @@ class NativeKFXGenerator:
         font_size=1.0,
         line_height=1.0,
         underline=False,
+        strike=False,
         bold=False,
         margin_top=None,
         is_heading=False,
@@ -2018,6 +2019,8 @@ class NativeKFXGenerator:
                       is omitted to let Kindle use its default (matching reference KFX).
             line_height: Line height in lh units (default 1.0, matching reference KFX)
             underline: If True, add text-decoration: underline ($23: $328)
+            strike: If True, add text-decoration: line-through ($27: $328),
+                as Kindle Previewer 4 writes it (#237)
             bold: If True, set font-weight: bold ($13: $361)
             italic: If True, add font-style: italic ($12: $382)
             is_heading: If True, omit the body top margin ($47); headings space
@@ -2126,6 +2129,9 @@ class NativeKFXGenerator:
         # $23: $328 = text-decoration: underline
         if underline:
             value[IS("$23")] = IS("$328")
+        # $27: $328 = text-decoration: line-through (#237)
+        if strike:
+            value[IS("$27")] = IS("$328")
 
         # $12 = font-style: $382 = italic (authoritative, jhowell kfxlib)
         if italic:
@@ -4533,7 +4539,14 @@ class NativeKFXGenerator:
                 return height_style_names.get(pct)
             return width_style_names.get(pct)
 
-        from .inline_style import FLAG_BOLD, FLAG_ITALIC, FLAG_SUB, FLAG_SUPER
+        from .inline_style import (
+            FLAG_BOLD,
+            FLAG_ITALIC,
+            FLAG_STRIKE,
+            FLAG_SUB,
+            FLAG_SUPER,
+            FLAG_UNDERLINE,
+        )
 
         # Block-level emphasis (CSS `font-weight`/`font-style` on the paragraph)
         # is composed with inline-run flags only when the book embeds fonts, so
@@ -4562,6 +4575,11 @@ class NativeKFXGenerator:
                 attrs["font_size"], attrs["baseline_style"] = superscript_metrics()
             elif FLAG_SUB in flags:
                 attrs["font_size"], attrs["baseline_style"] = subscript_metrics()
+            # Set only when drawn, so every other style keeps its key (#237).
+            if FLAG_UNDERLINE in flags:
+                attrs["underline"] = True
+            if FLAG_STRIKE in flags:
+                attrs["strike"] = True
             if in_cell:
                 attrs["no_align"] = True
             return _allocate_style("_em", **attrs)
@@ -4817,7 +4835,14 @@ class NativeKFXGenerator:
                     anchor = body_anchor_map.get(target) if target else None
                     has_emphasis = any(
                         f in flags
-                        for f in (FLAG_BOLD, FLAG_ITALIC, FLAG_SUPER, FLAG_SUB)
+                        for f in (
+                            FLAG_BOLD,
+                            FLAG_ITALIC,
+                            FLAG_SUPER,
+                            FLAG_SUB,
+                            FLAG_UNDERLINE,
+                            FLAG_STRIKE,
+                        )
                     )
                     style = (
                         _emphasis_style(
