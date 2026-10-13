@@ -32,6 +32,9 @@ each entry from the TOC:
      - "A Cited Title" is italic. Old: regular.
      - "b normal", "strong normal", "i upright" and "em upright" are all
        regular (#362). Old: the first two bold, the last two italic.
+       "em spaced" is italic and "b small caps" is bold, in New and Old:
+       their CSS swaps the style for letter-spacing and small caps, which
+       kfxgen can't draw yet (#239), so the tag's style is kept.
      - "weight seven hundred" is bold. Old: regular.
      - "A paragraph at weight six hundred." is regular in Text Styles and
        bold in Text Styles Fonts. Old: regular in both.
@@ -104,6 +107,8 @@ p.hi { font-style: italic; }
 p.wb { font-weight: bold; }
 b.plain, strong.plain { font-weight: normal; }
 i.plain, em.plain { font-style: normal; }
+em.spaced { font-style: normal; letter-spacing: 0.15em; }
+b.caps { font-weight: normal; font-variant: small-caps; }
 span.n700 { font-weight: 700; }
 p.n600 { font-weight: 600; }
 span.lt { text-decoration: line-through; }
@@ -137,7 +142,9 @@ PAGES = [
         "<p>A book: <cite>A Cited Title</cite>.</p>"
         '<p>Tags set to normal by CSS: <b class="plain">b normal</b>, '
         '<strong class="plain">strong normal</strong>, '
-        '<i class="plain">i upright</i> and <em class="plain">em upright</em>.</p>'
+        '<i class="plain">i upright</i> and <em class="plain">em upright</em>. '
+        'Swapped for an effect kfxgen cannot draw: <em class="spaced">em spaced</em> '
+        'and <b class="caps">b small caps</b>.</p>'
         '<p>A number: <span class="n700">weight seven hundred</span>.</p>'
         '<p class="n600">A paragraph at weight six hundred.</p>'
         '<p class="wb">A whole bold paragraph with <span>a span</span> in it.</p>'

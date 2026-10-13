@@ -54,6 +54,7 @@ def _resolver(rules=CSS):
         out = {"font-weight": "normal", "font-style": "normal"}
         for a in [*reversed(list(e.iterancestors())), e]:
             out.update({k: v for k, v in own(a).items() if k in INHERITED})
+        out.update({k: v for k, v in own(e).items() if k not in INHERITED})
         return out
 
     return resolve
@@ -289,3 +290,61 @@ def test_a_resolver_that_reports_no_weight_leaves_a_tag_bold():
         "<p>a <b>bold</b> b</p>", resolver=lambda e: {"vertical-align": None}
     )
     assert _runs(text, spans, BOLD) == ["bold"]
+
+
+# --- ...unless the CSS swaps it for emphasis kfxgen can't draw yet (#239) --
+
+SWAP = dict(
+    RESET,
+    sp={"font-style": "normal", "letter-spacing": "0.15em"},
+    sc={"font-weight": "normal", "font-variant": "small-caps"},
+    up={"font-weight": "normal", "text-transform": "uppercase"},
+    sp0={"font-style": "normal", "letter-spacing": "normal"},
+)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("tag", "cls", "flag"),
+    [
+        ("em", "sp", ITALIC),
+        ("i", "sp", ITALIC),
+        ("b", "sc", BOLD),
+        ("strong", "up", BOLD),
+    ],
+)
+def test_a_tag_whose_css_swaps_its_emphasis_keeps_it(tag, cls, flag):
+    """pg50285's `em { letter-spacing: 0.15em; font-style: normal }` and
+    pg64317's `b { font-variant: small-caps; font-weight: normal }`: kfxgen
+    can't draw those yet, so the tag's style keeps the words emphasised."""
+    body = f'<p>a <{tag} class="{cls}">word</{tag}> b</p>'
+    text, spans = _reset_para(body, resolver=_resolver(SWAP))
+    assert _runs(text, spans, flag) == ["word"]
+
+
+@pytest.mark.unit
+def test_letter_spacing_normal_is_no_swap():
+    text, spans = _reset_para('<p>a <em class="sp0">word</em> b</p>', _resolver(SWAP))
+    assert _runs(text, spans, ITALIC) == []
+
+
+@pytest.mark.unit
+def test_a_span_under_bold_with_letter_spacing_still_ends_the_bold():
+    """Only a tag keeps its own style; a span that sets normal ends it."""
+    swap = dict(SWAP, spn={"font-weight": "normal", "letter-spacing": "0.1em"})
+    text, spans = _reset_para(
+        '<p><b>bold <span class="spn">spaced</span></b></p>', _resolver(swap)
+    )
+    assert "spaced" not in "".join(_runs(text, spans, BOLD))
+
+
+@pytest.mark.unit
+def test_the_resolver_reports_the_swapped_effects():
+    own = {"letter-spacing": "0.15em", "font-variant": "small-caps"}
+    resolve = _calibre_resolver({"x": dict(own, **{"text-transform": "uppercase"})})
+    css = resolve(_doc('<p><span class="x">w</span></p>').find(".//{*}span"))
+    assert (css["letter-spacing"], css["font-variant"], css["text-transform"]) == (
+        "0.15em",
+        "small-caps",
+        "uppercase",
+    )
