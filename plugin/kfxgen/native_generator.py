@@ -678,6 +678,11 @@ def place_locations(sections):
         pid = next_location = 0
         for eid, length in entries:
             if length <= 0:
+                # A link container shares its picture's position (#355): a
+                # location falling there is the container's, as in kfxlib.
+                if next_location == pid:
+                    locations.append((eid, 0))
+                    next_location += POSITIONS_PER_LOCATION
                 continue
             while next_location < pid + length:
                 locations.append((eid, next_location - pid))
