@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Build sideload A/B pairs for text styles: CSS bold and italic (#312),
-strike-through and underline (#237).
+strike-through and underline (#237), and monospace (#242).
 
 One invented source book, made twice: once with no fonts, and once embedding
 Charis SIL on <body>. A bold or italic run has to match an embedded face, so
@@ -51,6 +51,20 @@ each entry from the TOC:
        it (Kindle Previewer drops that line; kfxgen keeps it). Tapping each
        one goes to "Plain text with no lines.".
      Old: no lines anywhere in this chapter.
+  3. "3. Monospace":
+     - "len(items)", "Ctrl", "OK" and "teletype text" are in a fixed-width
+       font, like a typewriter's; "n" is italic, not fixed-width.
+     - "monospace by CSS" and "courier by CSS" are fixed-width.
+     - The two-line "def greet(name):" block is fixed-width, its second
+       line indented by four spaces.
+     - "bold code" is bold and fixed-width. "a linked function" is
+       fixed-width, and tapping it goes to the "def greet" block.
+     - "For comparison: list and the list." is in the body font.
+     - The two verse lines "The tide went out..." are fixed-width, as
+       Gutenberg's `.pgmonospaced` CSS asks. Many Gutenberg books set
+       verse this way, so judge whether it reads well.
+     Old: everything in the body font, except that "n" is italic in New
+     only (#312).
 """
 
 import argparse
@@ -93,6 +107,9 @@ span.lt { text-decoration: line-through; }
 span.both { text-decoration: underline line-through; }
 span.none { text-decoration: none; }
 ins.plain { text-decoration: none; }
+span.mono { font-family: monospace; }
+span.cour { font-family: "Courier New", monospace; }
+.pgmonospaced { font-family: monospace; font-size: 0.9em; }
 """
 
 FONT_CSS = (
@@ -138,6 +155,20 @@ PAGES = [
         '<a href="chapter_2.xhtml#plain">a plain link</a> and '
         '<a href="chapter_2.xhtml#plain"><s>a struck link</s></a>.</p>',
     ),
+    (
+        "3. Monospace",
+        "<p>Inline: call <code>len(items)</code>, press <kbd>Ctrl</kbd>, "
+        "the output <samp>OK</samp>, old <tt>teletype text</tt>, and "
+        "<var>n</var>.</p>"
+        '<p>CSS: <span class="mono">monospace by CSS</span> and '
+        '<span class="cour">courier by CSS</span>.</p>'
+        '<pre id="code">def greet(name):\n    return "hello " + name</pre>'
+        "<p>Bold code: <b><code>bold code</code></b>. Linked code: "
+        '<a href="chapter_3.xhtml#code"><code>a linked function</code></a>.</p>'
+        "<p>For comparison: list and the list.</p>"
+        '<div class="pgmonospaced">     The tide went out across the flats,\n<br/>'
+        "       and gulls came down to feed.</div>",
+    ),
 ]
 
 
@@ -173,13 +204,14 @@ def build_source(out_dir, fonts):
 
 def _styled_text(kfx):
     """{"bold": [...], ...}: the text of each run whose applied style is
-    bold, italic, underlined or struck through, in reading order."""
+    bold, italic, underlined, struck through or monospace, in reading
+    order."""
     frags = load_fragments(kfx)
     styles = {str(f.fid): val(f) for f in by_type(frags, "$157")}
     texts = {}
     for f in by_type(frags, "$145"):
         texts[str(f.fid)] = list(val(f)["$146"])
-    out = {"bold": [], "italic": [], "underline": [], "strike": []}
+    out = {"bold": [], "italic": [], "underline": [], "strike": [], "mono": []}
     for st in by_type(frags, "$259"):
         for e in iter_entries(val(st)["$146"]):
             ref = e.get("$145")
@@ -198,6 +230,8 @@ def _styled_text(kfx):
                     out["underline"].append(text[start : start + length])
                 if str(s.get("$27")) == "$328":
                     out["strike"].append(text[start : start + length])
+                if str(s.get("$11")) == "monospace":
+                    out["mono"].append(text[start : start + length])
     return out
 
 
