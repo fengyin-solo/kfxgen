@@ -2017,6 +2017,7 @@ class NativeKFXGenerator:
         margin_top=None,
         is_heading=False,
         italic=False,
+        upright=False,
         align=None,
         text_indent=None,
         margin_left=None,
@@ -2043,6 +2044,10 @@ class NativeKFXGenerator:
                 as Kindle Previewer 4 writes it (#237)
             bold: If True, set font-weight: bold ($13: $361)
             italic: If True, add font-style: italic ($12: $382)
+            upright: If True and not italic, write font-style: normal
+                ($12: $350), for a run set upright inside an italic
+                paragraph; without it the run takes the paragraph's italic
+                (#367 review)
             is_heading: If True, omit the body top margin ($47); headings space
                         via $46 (margin_top param) instead.
             align: Text alignment override. If a key in ALIGN_MAP ("left", "right", "center"),
@@ -2156,6 +2161,8 @@ class NativeKFXGenerator:
         # $12 = font-style: $382 = italic (authoritative, jhowell kfxlib)
         if italic:
             value[IS("$12")] = IS("$382")
+        elif upright:
+            value[IS("$12")] = IS("$350")
 
         # $11 = font-family (#15). Set only when an embedded face was matched;
         # its absence preserves byte-identical output for non-font books.
@@ -4649,6 +4656,10 @@ class NativeKFXGenerator:
             mono = mono_families(flags)
             fam = _family(list(mono) if mono else family_list, bold, italic)
             attrs = {"italic": italic, "bold": bold}
+            if blk_italic and not italic:
+                # Set back to upright inside an italic paragraph: say so, or
+                # the run takes the paragraph's italic (#367 review).
+                attrs["upright"] = True
             if fam:
                 attrs["font_family"] = fam
             # Superscript/subscript: reduced font-size plus a $44 baseline

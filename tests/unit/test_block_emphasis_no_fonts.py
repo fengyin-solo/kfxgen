@@ -224,7 +224,8 @@ def test_a_run_set_upright_in_an_italic_paragraph_is_upright(tmp_path):
     body = '<p class="hi">Slanted words then <span class="ns">upright</span> ones.</p>'
     _, runs = _styles_by_text(_book(tmp_path, body))["Slanted words then upright ones."]
     (style,) = [s for t, s in runs if t == "upright"]
-    assert not _italic(style)
+    # Said outright: a run style without $12 takes the paragraph's italic.
+    assert str(style.get("$12")) == "$350"
 
 
 @pytest.mark.unit
@@ -234,7 +235,8 @@ def test_a_character_name_in_a_stage_direction_stays_upright(tmp_path):
     body = '<p class="hi">Enter <span class="charname">Helena</span> and others.</p>'
     _, runs = _styles_by_text(_book(tmp_path, body))["Enter Helena and others."]
     (style,) = [s for t, s in runs if t == "Helena"]
-    assert not _italic(style)
+    # Said outright: a run style without $12 takes the paragraph's italic.
+    assert str(style.get("$12")) == "$350"
 
 
 @pytest.mark.unit
