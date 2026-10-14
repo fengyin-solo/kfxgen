@@ -47,6 +47,14 @@ class KFXGenOutputPlugin(OutputFormatPlugin):
     minimum_calibre_version = (5, 0, 0)
     can_be_disabled = True
 
+    # Font sizes as the book writes them, as Kindle Previewer writes them:
+    # calibre's default rescaling snaps 0.9em to 0.75, which put a poem's
+    # verse a quarter below its notes (#241). MED, so a user's own Look &
+    # Feel setting still wins.
+    recommendations = {
+        ("disable_font_rescaling", True, OptionRecommendation.MED),
+    }
+
     options = {
         OptionRecommendation(
             name="kfxgen_embed_original_images",
