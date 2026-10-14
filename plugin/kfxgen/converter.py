@@ -37,14 +37,17 @@ from .inline_style import (
     LINE_START,
     _parse_font_family,
     compute_block_style,
+    css_font_size,
     is_monospace,
     make_anchor_mark,
     make_link_flag,
     make_mono_flag,
+    make_size_flag,
     mono_families,
     normalize_runs_with_anchors,
     parse_css_length,
     parse_vertical_align,
+    run_font_size,
 )
 from .native_generator import NativeKFXGenerator
 
@@ -149,6 +152,72 @@ def _specified_inherited(stylizer, elem, prop):
     return None
 
 
+#: CSS px to the unit, for font-size. The em is 16px, as Kindle Previewer
+#: measures it (24px is 1.5em, #241).
+_FONT_PX = 16.0
+_FONT_UNIT_PX = {
+    "px": 1.0,
+    "pt": 4 / 3,
+    "pc": 16.0,
+    "in": 96.0,
+    "cm": 96 / 2.54,
+    "mm": 96 / 25.4,
+    "q": 96 / 101.6,
+}
+_FONT_KEYWORD_PX = {
+    "xx-small": 9.0,
+    "x-small": 10.0,
+    "small": 13.0,
+    "medium": 16.0,
+    "large": 18.0,
+    "x-large": 24.0,
+    "xx-large": 32.0,
+    "xxx-large": 48.0,
+}
+_FONT_SIZE_RE = re.compile(r"^([0-9]*\.?[0-9]+)(em|rem|ex|ch|%|[a-z]+)$")
+
+
+def _font_size_px(stylizer, elem, cache):
+    """`elem`'s font size in CSS px, from each specified value up its
+    ancestors. Calibre's computed size converts px at the output profile's
+    DPI (24px came out 5.76pt on the Voyage profile), so it is not used.
+    A value kfxgen can't read (`calc()`) is inherited."""
+    if elem is None:
+        return _FONT_PX
+    if elem in cache:
+        return cache[elem]
+    parent = elem.getparent()
+    inherited = _font_size_px(stylizer, parent, cache)
+    value = str(stylizer.style(elem).get("font-size") or "").strip().lower()
+    size = inherited
+    if value in _FONT_KEYWORD_PX:
+        size = _FONT_KEYWORD_PX[value]
+    elif value == "smaller":
+        # Previewer's step: <small> is 0.833333, <big> 1.2.
+        size = inherited / 1.2
+    elif value == "larger":
+        size = inherited * 1.2
+    else:
+        m = _FONT_SIZE_RE.match(value.replace(" ", ""))
+        if m and float(m.group(1)) > 0:
+            n, unit = float(m.group(1)), m.group(2)
+            if unit == "em":
+                size = n * inherited
+            elif unit in ("ex", "ch"):
+                size = n * inherited / 2
+            elif unit == "%":
+                size = n * inherited / 100
+            elif unit == "rem":
+                root = elem.getroottree().getroot()
+                size = n * (
+                    _FONT_PX if root is elem else _font_size_px(stylizer, root, cache)
+                )
+            elif unit in _FONT_UNIT_PX:
+                size = n * _FONT_UNIT_PX[unit]
+    cache[elem] = size
+    return size
+
+
 _DECORATION_LINES = {"underline", "line-through"}
 
 
@@ -181,11 +250,15 @@ def _build_style_resolver(oeb_book, item, log, stylizer_factory=None):
     try:
         make = stylizer_factory or _default_stylizer
         stylizer = make(oeb_book, item)
+        sizes = {}
 
         def resolve(elem):
             try:
                 st = stylizer.style(elem)
                 return {
+                    # A number, in CSS px; the generator measures it
+                    # against the book's main text size (#241).
+                    "font-size": round(_font_size_px(stylizer, elem, sizes), 3),
                     # text-align is INHERITED (set on <body> or a wrapper
                     # <div>), so read it inheritance-aware like font-family:
                     # Style.get() returns None when inherited; Style[prop]
@@ -743,8 +816,8 @@ def _swaps_emphasis(css):
 
 
 def _css_emphasis(css):
-    """(bold, italic, monospace families or None) from an element's computed
-    CSS, or None without it.
+    """(bold, italic, monospace families or None, font size or None) from an
+    element's computed CSS, or None without it.
     `bolder` is relative, but from any weight a book uses it lands on bold
     (`lighter` reads as normal already)."""
     if not css:
@@ -753,7 +826,7 @@ def _css_emphasis(css):
     bold = weight == "bolder" or parse_weight(weight) >= BOLD_WEIGHT_THRESHOLD
     families = tuple(_parse_font_family(css.get("font-family")))
     mono = families if is_monospace(families) else None
-    return bold, parse_style(css.get("font-style")), mono
+    return bold, parse_style(css.get("font-style")), mono, css_font_size(css)
 
 
 #: In `_walk_inline(split_tables=True)`, stands in for a table nested in the
@@ -927,6 +1000,11 @@ def _walk_inline(
                 cur = {f for f in cur if mono_families((f,)) is None}
                 if emphasis[2]:
                     cur.add(make_mono_flag(emphasis[2]))
+            if emphasis[3] != parent_emphasis[3]:
+                # A size of its own, or back to its parent's (#241).
+                cur = {f for f in cur if run_font_size((f,)) is None}
+                if emphasis[3] is not None:
+                    cur.add(make_size_flag(emphasis[3]))
     if local in _MONO_TAGS and "font-family" not in (own_css or {}):
         cur.add(make_mono_flag(("monospace",)))
     cur = frozenset(cur)

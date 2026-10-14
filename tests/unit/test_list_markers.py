@@ -288,7 +288,7 @@ def test_resolver_reads_inherited_list_style_type_and_own_display():
     resolver = _build_style_resolver(
         None, None, NullLog(), stylizer_factory=lambda oeb, item: _Stylizer(st)
     )
-    css = resolver(object())
+    css = resolver(etree.Element("li"))
     assert css["list-style-type"] == "none"
     assert css["display"] == "list-item"
 
