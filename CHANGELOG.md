@@ -1,5 +1,47 @@
 # Changelog
 
+## 5.12.1 — Contents nesting, page breaks and emphasis fixes
+
+The changes since 5.12.0, each reviewed and converted through real calibre,
+with the Gutenberg 90 and a 50-book library sample compared before and after
+each change. All six were checked on the Voyage (5.13.6); the Paperwhite was
+not checked.
+
+**Bold or italic tags set back to normal (#362).** `<b>` or `<strong>` with
+`font-weight: normal`, and `<i>` or `<em>` with `font-style: normal`, still
+came out bold or italic. The book's CSS now wins. A tag whose CSS swaps its
+emphasis for small caps, wider letter-spacing or a text-transform keeps its
+bold or italic, so its words still stand out until kfxgen can draw those
+effects (#239).
+
+**Contents entries no longer each start a page (#363).** Every contents
+entry started a new page, so a book whose contents list each line of its
+title page (pg3011) showed one line per page. An entry now starts a page
+only at the start of its file or where the book's CSS breaks the page. Other
+entries are places within the page, still listed in the contents pane and on
+the Contents page, and they land on their own line.
+
+**Nested contents (#313).** The contents pane and kfxgen's Contents page
+listed every entry at one level. Sections now sit under their chapters in
+the contents pane, as in Kindle Previewer's output, and the Contents page
+indents each level. Of the Gutenberg 90, 49 books now have nested contents.
+
+**Text above a printed contents list (#369).** When kfxgen rebuilt a book's
+printed contents list as its Contents page, a line above the list was lost
+with it: pg3011's date line, "1883". That line now keeps its own page and
+contents entry.
+
+**Paragraph bold and italic without embedded fonts (#367).** A paragraph
+made bold or italic by its CSS, an in-chapter heading such as `<h3>`, and a
+bold table cell came out regular in books without embedded fonts. They are
+now bold and italic either way, as Kindle Previewer writes them. Text that
+the CSS sets back to normal inside them stays normal: pg100's character
+names inside italic stage directions are upright.
+
+**Emphasis inside chapter headings (#366).** kfxgen prints each chapter's
+heading from its contents label, so `<h1>The <i>Harbour</i></h1>` lost its
+italic. The heading now keeps the book's own italic, bold and underline.
+
 ## 5.12.0 — Bold, italic, lines and code from the book's CSS
 
 The changes since 5.11.1, each reviewed and converted through real calibre.
