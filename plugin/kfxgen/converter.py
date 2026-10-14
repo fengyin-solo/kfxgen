@@ -4042,6 +4042,9 @@ def _assemble_chapters_by_coordinate(
                 (frag, unquote(frag))
             )
     nav_flat = set()
+    # Where each listing actually sat: the index of the block after it, before
+    # the clamping above. What is printed above it is kept (#369).
+    listing_at = {}
     for si, s_item in enumerate(spine_items_ordered):
         last = len(spine_blocks[si]) - 1
         if last < 0:
@@ -4049,15 +4052,20 @@ def _assemble_chapters_by_coordinate(
         frags_here = toc_frag_at.get(_normalize_href(s_item["href"]), set())
         for local, ids in s_item.get("nav_listing_at") or ():
             fi = file_offset[si] + min(local, last)
+            raw = file_offset[si] + local
             if fi in starts and 0 < local <= last and not (ids & frags_here):
                 fi -= 1
             nav_flat.add(fi)
+            listing_at.setdefault(fi, raw)
 
     def _flag_nav(ch, start, end):
         """Mark a chapter that held a discarded listing. Half-open, matching
         the slice the chapter was built from."""
-        if ch and any(start <= i < end for i in nav_flat):
+        here = [listing_at[i] for i in nav_flat if start <= i < end]
+        if ch and here:
             ch["_had_nav_listing"] = True
+            # The first listing's place in the chapter's blocks (#369).
+            ch["_nav_listing_at"] = max(0, min(here) - start)
         return ch
 
     def _mk(title, block_slice):
@@ -4586,6 +4594,71 @@ def _nav_listing_contents_chapter(chapters):
     return None
 
 
+#: What a listing's own heading says, which kfxgen's Contents page replaces:
+#: the titles it rebuilds by, a navigation document's label, and the usual
+#: word for it in other languages. Anything else above a listing is the
+#: book's text and is kept (#369).
+_LISTING_HEADINGS = _CONTENTS_TITLES | frozenset(
+    {
+        "navigation",
+        "toc",
+        "inhalt",
+        "inhaltsverzeichnis",
+        "table des matières",
+        "sommaire",
+        "índice",
+        "indice",
+        "contenido",
+        "contenidos",
+        "sumário",
+        "inhoud",
+        "innehåll",
+        "indhold",
+        "innhold",
+        "sisällys",
+        "spis treści",
+        "obsah",
+        "содержание",
+        "оглавление",
+        "目次",
+        "目录",
+        "目錄",
+        "차례",
+        "목차",
+    }
+)
+
+
+def _split_text_above_listing(ch):
+    """The text printed above `ch`'s listing, as a chapter of its own, or None.
+
+    The rebuild replaces the chapter holding a listing, whose one paragraph
+    is taken to be the listing's heading. When that paragraph sits above the
+    listing and isn't a contents heading, it's the book's own text: pg3011's
+    title page ends with its date, "1883", which the NCX names and the
+    listing follows (#369). It keeps the chapter's contents entry; the
+    rebuilt page follows it under its own."""
+    blocks = ch.get("blocks") or []
+    at = ch.get("_nav_listing_at")
+    if not at:
+        return None
+    above, rest = blocks[:at], blocks[at:]
+    shown = [b for b in above if (b.get("text") or "").strip()]
+    if not shown or _normalize_title(shown[0]["text"]) in _LISTING_HEADINGS:
+        return None
+    lead = {
+        k: v
+        for k, v in ch.items()
+        if k not in ("blocks", "text", "_had_nav_listing", "_nav_listing_at")
+    }
+    lead["blocks"] = above
+    lead["text"] = "\n\n".join(b["text"] for b in above if b.get("text"))
+    ch["blocks"] = rest
+    ch["text"] = "\n\n".join(b["text"] for b in rest if b.get("text"))
+    ch.pop("sub_entries", None)
+    return lead
+
+
 def _count_text_blocks(blocks):
     """Blocks with text, counting each paragraph inside a box (#319) and
     each paragraph in a native table's cells (#330)."""
@@ -4643,6 +4716,11 @@ def _replace_title_page(chapters, metadata, log):
     # (#132). Resolved before the loop so the "already has one" test sees
     # every chapter, not just those visited so far.
     nav_contents_ch = _nav_listing_contents_chapter(chapters)
+    if nav_contents_ch is not None:
+        lead = _split_text_above_listing(nav_contents_ch)
+        if lead is not None:
+            chapters.insert(chapters.index(nav_contents_ch), lead)
+            log.info(f"  Kept the text above the contents listing: {lead['title']}")
     for ch in chapters:
         if ch is nav_contents_ch:
             _rebuild_contents_page(ch, chapters, log)
