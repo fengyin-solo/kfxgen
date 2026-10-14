@@ -1532,7 +1532,9 @@ class NativeKFXGenerator:
           2. Landmarks ($235: $236) — structural landmarks (e.g., bodymatter start)
 
         Args:
-            toc_entries: List of dicts with 'title' and 'position' keys
+            toc_entries: List of dicts with 'title' and 'position' keys, and
+                an 'offset' into that position for an entry that names a
+                place inside a paragraph (#363)
             cover_position: Position of the synthetic cover section, when the
                 book has one. The $233 landmark then marks the cover (#160).
 
@@ -1559,7 +1561,7 @@ class NativeKFXGenerator:
                     IS("$241"),
                     IonStruct(IS("$244"), "heading-nav-unit"),
                     IS("$246"),
-                    IonStruct(IS("$155"), position, IS("$143"), 0),
+                    IonStruct(IS("$155"), position, IS("$143"), entry.get("offset", 0)),
                 ),
             )
             heading_units.append(heading_unit)
@@ -1604,7 +1606,7 @@ class NativeKFXGenerator:
                     IS("$241"),
                     IonStruct(IS("$244"), title),
                     IS("$246"),
-                    IonStruct(IS("$155"), position, IS("$143"), 0),
+                    IonStruct(IS("$155"), position, IS("$143"), entry.get("offset", 0)),
                 ),
             )
             nav_units.append(unit)
@@ -3157,11 +3159,17 @@ class NativeKFXGenerator:
         # 6. Build Fragment $389 (Navigation / TOC). Synthetic chapters
         # marked with `_omit_from_toc` (e.g. the cover-in-reading-flow
         # chapter) are excluded so they don't appear in the nav-pane.
-        nav_entries = [
-            {"title": ch["title"], "position": pos}
-            for ch, pos in zip(chapters, toc_positions)
-            if not ch.get("_omit_from_toc")
-        ]
+        nav_entries = []
+        for ch, pos in zip(chapters, toc_positions):
+            if not ch.get("_omit_from_toc"):
+                nav_entries.append({"title": ch["title"], "position": pos})
+            # Entries that name a place in the section, not a section of
+            # their own (#363). One that can't be found opens the section.
+            for sub in ch.get("sub_entries") or ():
+                at, offset = ch_data["key_positions"].get(sub["key"], (pos, 0))
+                nav_entries.append(
+                    {"title": sub["title"], "position": at, "offset": offset}
+                )
         # The synthetic cover chapter is always first when present (#32).
         cover_position = section_positions[0] if chapters[0].get("_is_cover") else None
         self.fragments.append(
@@ -3981,7 +3989,10 @@ class NativeKFXGenerator:
                 for link in toc_links:
                     chunk_idx = len(all_chunks)
                     all_chunks.append({"type": "text", "text": link["text"]})
-                    toc_link_chunks[chunk_idx] = link["target_chapter_idx"]
+                    toc_link_chunks[chunk_idx] = (
+                        link["target_chapter_idx"],
+                        link.get("target_key"),
+                    )
             else:
                 # The title is cut from the body only because the heading
                 # prints it. With the heading suppressed by the caller, the
@@ -4242,16 +4253,56 @@ class NativeKFXGenerator:
             _first_leaf_position(*chapter_chunk_ranges[i]) for i in range(len(chapters))
         ]
 
+        # Where each declared id lives, and where each file first appears.
+        # A link may name a whole file ("chapter_002.xhtml") with no
+        # fragment, which resolves to the earliest position known for it.
+        key_to_chunk = {}
+        key_to_offset = {}
+        file_to_chunk = {}
+        for chunk_idx, chunk in enumerate(all_chunks):
+            offsets = chunk.get("anchor_offsets") or {}
+            for key in chunk.get("anchor_keys") or []:
+                if key not in key_to_chunk:
+                    key_to_chunk[key] = chunk_idx
+                    key_to_offset[key] = offsets.get(key, 0)
+                file_to_chunk.setdefault(key.split("#", 1)[0], chunk_idx)
+
+        # Contents entries that name a place in a section (#363): the
+        # position and offset each lands on. A leaf, as for a chapter's
+        # start; past a container, the leaf's start.
+        key_positions = {}
+        for ch in chapters:
+            for sub in ch.get("sub_entries") or ():
+                idx = key_to_chunk.get(sub["key"])
+                if idx is None:
+                    continue
+                offset = key_to_offset.get(sub["key"], 0)
+                leaf = next(
+                    (
+                        i
+                        for i in range(idx, len(all_chunks))
+                        if all_chunks[i].get("type") in ("text", "image")
+                    ),
+                    idx,
+                )
+                key_positions[sub["key"]] = (
+                    chunk_positions[leaf],
+                    offset if leaf == idx else 0,
+                )
+
         # Build $266 anchor fragments for TOC link entries
         anchor_names = []
         chunk_anchor_map = {}
-        for chunk_idx, target_ch_idx in toc_link_chunks.items():
+        for chunk_idx, (target_ch_idx, key) in toc_link_chunks.items():
             anchor_name = f"toc_anchor_{len(anchor_names)}"
             if target_ch_idx < len(chapter_start_positions):
                 target_pos = chapter_start_positions[target_ch_idx]
             else:
                 target_pos = chapter_start_positions[0]
-            self.fragments.append(self.build_fragment_266(anchor_name, target_pos))
+            target_pos, offset = key_positions.get(key, (target_pos, 0))
+            self.fragments.append(
+                self.build_fragment_266(anchor_name, target_pos, offset)
+            )
             chunk_anchor_map[chunk_idx] = anchor_name
             anchor_names.append(anchor_name)
 
@@ -4271,20 +4322,6 @@ class NativeKFXGenerator:
 
         body_anchor_map = {}  # anchor key -> anchor name
         if referenced_targets:
-            # Where each declared id lives, and where each file first appears.
-            # A link may name a whole file ("chapter_002.xhtml") with no
-            # fragment, which resolves to the earliest position known for it.
-            key_to_chunk = {}
-            key_to_offset = {}
-            file_to_chunk = {}
-            for chunk_idx, chunk in enumerate(all_chunks):
-                offsets = chunk.get("anchor_offsets") or {}
-                for key in chunk.get("anchor_keys") or []:
-                    if key not in key_to_chunk:
-                        key_to_chunk[key] = chunk_idx
-                        key_to_offset[key] = offsets.get(key, 0)
-                    file_to_chunk.setdefault(key.split("#", 1)[0], chunk_idx)
-
             for target in sorted(referenced_targets):
                 chunk_idx = key_to_chunk.get(target)
                 offset = key_to_offset.get(target, 0)
@@ -4930,6 +4967,7 @@ class NativeKFXGenerator:
             "content_names": content_names,
             "section_positions": section_positions,
             "chapter_start_positions": chapter_start_positions,
+            "key_positions": key_positions,
             "chunk_positions": chunk_positions,
             "outer_positions": outer_positions,
             "chapter_chunk_ranges": chapter_chunk_ranges,

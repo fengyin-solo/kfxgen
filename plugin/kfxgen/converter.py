@@ -232,6 +232,14 @@ def _build_style_resolver(oeb_book, item, log, stylizer_factory=None):
                     # A box's fill (#238). Declared: it doesn't inherit.
                     "background-color": st.get("background-color"),
                     "background-repeat": st.get("background-repeat"),
+                    # Where the book breaks the page: a contents entry
+                    # there starts a section, one anywhere else is a place
+                    # in a section (#363). Declared: they don't inherit, and
+                    # calibre keeps each spelling as written.
+                    "page-break-before": st.get("page-break-before"),
+                    "page-break-after": st.get("page-break-after"),
+                    "break-before": st.get("break-before"),
+                    "break-after": st.get("break-after"),
                     # Computed, because it inherits: <code> inside <pre> is
                     # preformatted too, and calibre's UA sheet gives <pre>
                     # `white-space: pre`. (#202)
@@ -2561,6 +2569,24 @@ def _mark_tight_runs(blocks, gap_of):
         run = [b] if b is not None and line(b) else []
 
 
+#: `page-break-*` and `break-*` values that start a new page (#363).
+_PAGE_BREAKS = frozenset({"always", "page", "left", "right", "recto", "verso"})
+
+
+def _page_breaks(css):
+    """Whether `css` breaks the page before its element, and after it."""
+    if not css:
+        return False, False
+
+    def breaks(side):
+        return any(
+            str(css.get(prop) or "").strip().lower() in _PAGE_BREAKS
+            for prop in (f"page-break-{side}", f"break-{side}")
+        )
+
+    return breaks("before"), breaks("after")
+
+
 def _space_between(blocks, margins, measured=True):
     """`blocks` with the space a scene break puts above a paragraph, in ems,
     as "space_above" (#230, #326). The space blocks standing for spacers and
@@ -2783,6 +2809,9 @@ def extract_blocks_from_html(
     # paragraph or an <hr> that draws nothing is a {"type": "space"} block
     # until the end, where the space goes above the next paragraph.
     margins = {}  # id(block) -> [top, bottom]
+    # The index from which the next block shown follows a page break, set by
+    # an element's `page-break-before` or the one before it's `-after` (#363).
+    break_at = []
 
     def _take_marker(text, spans, mark_offsets):
         """Prefix the pending list marker, if any, to a text block."""
@@ -2882,8 +2911,10 @@ def extract_blocks_from_html(
         so nothing carries into the cell or out of it. Ids left pending at
         the cell's end go on its last block."""
         saved_ids, saved_markers = pending_ids[:], pending_markers[:]
+        saved_break = break_at[:]
         pending_ids.clear()
         pending_markers.clear()
+        break_at.clear()
         start = len(blocks)
         listings = len(nav_listing_at) if nav_listing_at is not None else 0
         _walk_element(cell)
@@ -2904,6 +2935,7 @@ def extract_blocks_from_html(
                     last["anchor_offsets"][aid] = 0
         pending_ids[:] = saved_ids
         pending_markers[:] = saved_markers
+        break_at[:] = saved_break
         return out
 
     def _walk_split_row(row):
@@ -2974,6 +3006,27 @@ def extract_blocks_from_html(
         )
 
     def _walk(elem):
+        """Walk `elem`, then mark the first block shown after a page break
+        it or one before it set (#363)."""
+        css = (
+            style_resolver(elem)
+            if style_resolver is not None and isinstance(elem.tag, str)
+            else None
+        )
+        before, after = _page_breaks(css)
+        if before and not break_at:
+            break_at.append(len(blocks))
+        _walk_flow(elem)
+        if after and not break_at:
+            break_at.append(len(blocks))
+        if break_at:
+            for b in blocks[break_at[0] :]:
+                if b.get("type") != "space":
+                    b["break_before"] = True
+                    break_at.clear()
+                    break
+
+    def _walk_flow(elem):
         if _local_tag(elem.tag) != "li" or _is_hidden(elem, style_resolver):
             start = len(blocks)
             _walk_element(elem)
@@ -3281,6 +3334,7 @@ def extract_blocks_from_html(
         blocks[start:] = [
             {
                 "type": "box",
+                "break_before": any(b.get("break_before") for b in kids),
                 "text": "\n\n".join(b["text"] for b in kids if b["text"]),
                 "spans": [],
                 "block_style": None,
@@ -3814,6 +3868,66 @@ def _retitle_from_heading(ch):
         ch["_from_spine"] = True
 
 
+def _entry_key(spine_item, frag):
+    """The anchor key a contents entry into `spine_item` names, or None for
+    one naming the whole file. An id the file doesn't declare (the entry was
+    snapped to a block) goes on that block, so the entry still lands. (#363)"""
+    if not frag:
+        return None
+    doc = _key_doc(spine_item["href"], "")
+    return f"{doc}#{frag}"
+
+
+#: Pages kfxgen replaces or restyles by their contents title: a section of
+#: their own each, so nothing else is replaced with them (#363).
+def _rewritten_page(title):
+    t = _normalize_title(title)
+    return (
+        t in CONTENTS_SKIP_TITLES or t in SMALL_TEXT_CHAPTERS or t in _CONTENTS_TITLES
+    )
+
+
+def _section_heads(coords, flat, spine_items, nav_flat, file_offset):
+    """Which contents entries start a section (#363).
+
+    An entry starts one at the start of its file, or where the book breaks
+    the page between the entry before it and its own block. Any other entry
+    is a place in the section before it, still listed in the contents, as a
+    browser keeps a title page's lines on one page.
+
+    Every entry starts one when the file's CSS wasn't read (no stylizer), or
+    when kfxgen rewrites the section: a page it replaces by title, and one
+    holding a contents listing it rebuilds (#132). Text merged into those
+    would be lost with them."""
+    heads = []
+    for k, (fi, si, title, _key) in enumerate(coords):
+        if (
+            k == 0
+            or coords[k - 1][1] != si
+            or not spine_items[si].get("breaks_known")
+            or _rewritten_page(title)
+            or _rewritten_page(coords[k - 1][2])
+        ):
+            heads.append(True)
+            continue
+        prev = coords[k - 1][0]
+        heads.append(any(b.get("break_before") for b in flat[prev + 1 : fi + 1]))
+    # A merged section holding a listing splits at every entry again.
+    starts = [k for k, h in enumerate(heads) if h] + [len(coords)]
+    for a, b in zip(starts, starts[1:]):
+        if b - a < 2:
+            continue
+        lo, si = coords[a][0], coords[a][1]
+        hi = (
+            coords[b][0]
+            if b < len(coords)
+            else file_offset[si] + len(spine_items[si].get("blocks") or [])
+        )
+        if any(lo <= i < hi for i in nav_flat):
+            heads[a:b] = [True] * (b - a)
+    return heads
+
+
 def _assemble_chapters_by_coordinate(
     spine_items_ordered, toc_entries, log, cover_href=None
 ):
@@ -3845,7 +3959,7 @@ def _assemble_chapters_by_coordinate(
         if _f:
             toc_anchors.add(_f)
 
-    coords = []  # (flat_index, spine_index, title)
+    coords = []  # (flat_index, spine_index, title, anchor key or None)
     last_block_in_file = {}
     prev_flat = -1
     for entry in toc_entries:
@@ -3884,7 +3998,15 @@ def _assemble_chapters_by_coordinate(
                 f"  TOC entry {entry['title']!r} out of document order; skipping split"
             )
             continue
-        coords.append((fi, si, entry["title"]))
+        key = _entry_key(spine_items_ordered[si], frag)
+        if (
+            key
+            and frag not in amap
+            and key not in flat[fi].setdefault("anchor_keys", [])
+        ):
+            flat[fi]["anchor_keys"].append(key)
+            flat[fi].setdefault("anchor_offsets", {})[key] = 0
+        coords.append((fi, si, entry["title"], key))
         prev_flat = fi
         last_block_in_file[si] = bi
 
@@ -3909,7 +4031,7 @@ def _assemble_chapters_by_coordinate(
     # class="toc">`); otherwise it belongs to the chapter holding the block
     # before it. A listing at the start of its file stays with that file. (#276)
     starts = {}
-    for fi, si, _title in coords:
+    for fi, si, _title, _key in coords:
         starts[fi] = si
     toc_frag_at = {}
     for entry in toc_entries:
@@ -3986,16 +4108,27 @@ def _assemble_chapters_by_coordinate(
                     ch["_omit_title_heading"] = True
                 chapters.append(ch)
 
-    for k, (fi, si, title) in enumerate(coords):
-        if k + 1 < len(coords):
-            end = coords[k + 1][0]
+    heads = _section_heads(coords, flat, spine_items_ordered, nav_flat, file_offset)
+    for k, (fi, si, title, _key) in enumerate(coords):
+        if not heads[k]:
+            continue
+        nxt = next((j for j in range(k + 1, len(coords)) if heads[j]), None)
+        if nxt is not None:
+            end = coords[nxt][0]
         else:
+            # The entries after it are all in its file.
             end = file_offset[si] + len(spine_blocks[si])
         start = 0 if (k == 0 and head_has_toc_anchor) else fi
         ch = _flag_nav(_mk(title, flat[start:end]), start, end)
         if ch:
             if _is_file_name_label(title, spine_items_ordered[si]["href"]):
                 _retitle_from_heading(ch)
+            subs = [
+                {"title": c[2], "key": c[3]}
+                for c in coords[k + 1 : nxt if nxt is not None else None]
+            ]
+            if subs:
+                ch["sub_entries"] = subs
             chapters.append(ch)
 
     last_si = coords[-1][1]
@@ -4177,6 +4310,8 @@ def extract_chapters_from_oeb(
                 "blocks": blocks,
                 "nav_listing_at": nav_listing_at,
                 "note_ids": note_ids,
+                # Where the pages break is known only from the CSS (#363).
+                "breaks_known": resolver is not None,
             }
         )
         table_blocks.extend((href, b) for b in tables_seen)
@@ -4604,6 +4739,11 @@ def _rebuild_contents_page(contents_ch, all_chapters, log):
             # (#284 review: 835 of pg22210's 992 entries.)
             continue
         toc_links.append({"text": ch["title"], "target_chapter_idx": i})
+        # Places in the section the contents name, after it (#363).
+        toc_links.extend(
+            {"text": sub["title"], "target_chapter_idx": i, "target_key": sub["key"]}
+            for sub in ch.get("sub_entries") or ()
+        )
 
     # Illustrations that happen to sit in this section are content, and are
     # kept even though the text around them is not. The reason to discard a
