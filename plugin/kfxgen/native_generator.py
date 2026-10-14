@@ -452,6 +452,19 @@ def _title_after_pictures(blocks, title):
     return False
 
 
+def _title_spans(block, length):
+    """`block`'s runs, moved onto a heading printing its first `length`
+    characters after any leading space: the block is the book's own heading,
+    cut because the heading prints its title (#366)."""
+    lead = len(block["text"]) - len(block["text"].lstrip())
+    out = []
+    for start, n, flags in block.get("spans") or ():
+        s, e = max(start - lead, 0), min(start + n - lead, length)
+        if e > s:
+            out.append((s, e - s, flags))
+    return out
+
+
 def _opens_with_title(text, title):
     """Whether `text`, already stripped on the left, opens with the chapter
     title as whole words, so cutting it leaves no part of a word: "A" opens
@@ -4017,10 +4030,12 @@ class NativeKFXGenerator:
                 or body_is_image_only
                 or title_after_pictures
             )
+            heading_chunk = None
             if not omit_heading:
                 # First chunk: chapter title (heading)
                 heading_chunk_indices.add(len(all_chunks))
-                all_chunks.append({"type": "text", "text": title})
+                heading_chunk = {"type": "text", "text": title}
+                all_chunks.append(heading_chunk)
 
             if toc_links:
                 for link in toc_links:
@@ -4104,6 +4119,12 @@ class NativeKFXGenerator:
                                         first.get("anchor_keys") or []
                                     )
                                     iter_blocks = iter_blocks[1:]
+                                    # Its italic or bold words go on the
+                                    # heading that prints it (#366).
+                                    if heading_chunk is not None:
+                                        heading_chunk["spans"] = _title_spans(
+                                            first, len(title)
+                                        )
                             else:
                                 # Publishers routinely split the opener across
                                 # elements — the numeral in one, the title in
@@ -4923,6 +4944,8 @@ class NativeKFXGenerator:
                     bool(_cbs.get("bold"))
                     or bool((chunk.get("cell") or {}).get("header"))
                     or bool(chunk.get("in_header_cell"))
+                    # kfxgen's chapter heading is bold (#366).
+                    or chunk_idx in heading_chunk_indices
                 )
                 _blk_i = bool(_cbs.get("italic"))
                 # A run may be emphasis, a link, or both. Its visual style is
