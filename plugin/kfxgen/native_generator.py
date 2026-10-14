@@ -4627,9 +4627,8 @@ class NativeKFXGenerator:
             return fam
 
         # Block-level emphasis (CSS `font-weight`/`font-style` on the paragraph)
-        # is composed with inline-run flags only when the book embeds fonts, so
-        # books with no embeddable fonts stay byte-identical.
-        has_fonts = bool(self.font_table.faces)
+        # is written whether or not the book embeds fonts, as Kindle Previewer
+        # 4 writes it (#367); #34 had kept no-font books unchanged.
 
         def _emphasis_style(
             flags, family_list, blk_bold=False, blk_italic=False, in_cell=False
@@ -4668,8 +4667,8 @@ class NativeKFXGenerator:
             It must declare the weight and style of the face it names, or the
             Kindle falls back from the embedded face (#50). A header is bold
             on its own."""
-            blk_bold = bool(bs.get("bold")) if has_fonts else False
-            blk_italic = bool(bs.get("italic")) if has_fonts else False
+            blk_bold = bool(bs.get("bold"))
+            blk_italic = bool(bs.get("italic"))
             cell_bold = bool(cell["header"]) or blk_bold
             cell_fam = _family(bs.get("font_family", []), cell_bold, blk_italic)
             cattrs = {
@@ -4871,13 +4870,13 @@ class NativeKFXGenerator:
                     if chunk.get("space_above") is not None:
                         attrs["space_above"] = chunk["space_above"]
                     # Body run: match the block's font-family, honouring any
-                    # block-level CSS bold/italic (only when fonts are embedded,
-                    # so no-font books keep byte-identical $157 output). The entry
-                    # $157 carries the block's own weight/style ($13/$12) so it
-                    # matches the $262 face descriptor the Kindle resolves against
-                    # (#50) — the real face when present, synthesized otherwise.
-                    blk_bold = bool(bs.get("bold")) if has_fonts else False
-                    blk_italic = bool(bs.get("italic")) if has_fonts else False
+                    # block-level CSS bold/italic. The entry $157 carries the
+                    # block's own weight/style ($13/$12) so it matches the $262
+                    # face descriptor the Kindle resolves against (#50) — the
+                    # real face when present, synthesized otherwise, with or
+                    # without an embedded family (#367).
+                    blk_bold = bool(bs.get("bold"))
+                    blk_italic = bool(bs.get("italic"))
                     if chunk.get("in_header_cell"):
                         # A paragraph in a header cell is bold, as a header
                         # cell's own text is (#261).
@@ -4886,10 +4885,10 @@ class NativeKFXGenerator:
                     fam = _family(bs.get("font_family", []), blk_bold, blk_italic)
                     if fam:
                         attrs["font_family"] = fam
-                        if blk_bold:
-                            attrs["bold"] = True
-                        if blk_italic:
-                            attrs["italic"] = True
+                    if blk_bold:
+                        attrs["bold"] = True
+                    if blk_italic:
+                        attrs["italic"] = True
                     cell = chunk.get("cell")
                     if cell is not None:
                         entry_styles.append(_cell_style(cell, bs, attrs["font_size"]))
@@ -4905,11 +4904,11 @@ class NativeKFXGenerator:
                 # fonts, exactly as its cell style is; a span style names the
                 # run's whole face, so it must say bold too. (#219)
                 _blk_b = (
-                    (bool(_cbs.get("bold")) if has_fonts else False)
+                    bool(_cbs.get("bold"))
                     or bool((chunk.get("cell") or {}).get("header"))
                     or bool(chunk.get("in_header_cell"))
                 )
-                _blk_i = bool(_cbs.get("italic")) if has_fonts else False
+                _blk_i = bool(_cbs.get("italic"))
                 # A run may be emphasis, a link, or both. Its visual style is
                 # whatever the flags say; its $179 is the resolved anchor, or
                 # None when nothing in the book declares the target — an
