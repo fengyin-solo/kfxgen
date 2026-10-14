@@ -4610,6 +4610,8 @@ class NativeKFXGenerator:
         from .inline_style import (
             FLAG_BOLD,
             FLAG_ITALIC,
+            FLAG_NOT_BOLD,
+            FLAG_NOT_ITALIC,
             FLAG_STRIKE,
             FLAG_SUB,
             FLAG_SUPER,
@@ -4639,8 +4641,11 @@ class NativeKFXGenerator:
             # (#50): a real face is used when present, synthesized otherwise. With
             # no embedded family, font_family is omitted and bold/italic still
             # drive synthetic rendering -> byte-identical to today's output.
-            bold = (FLAG_BOLD in flags) or blk_bold
-            italic = (FLAG_ITALIC in flags) or blk_italic
+            # A run its CSS set back to normal stays normal (#367 review).
+            bold = (FLAG_BOLD in flags) or (blk_bold and FLAG_NOT_BOLD not in flags)
+            italic = (FLAG_ITALIC in flags) or (
+                blk_italic and FLAG_NOT_ITALIC not in flags
+            )
             mono = mono_families(flags)
             fam = _family(list(mono) if mono else family_list, bold, italic)
             attrs = {"italic": italic, "bold": bold}
@@ -4924,6 +4929,8 @@ class NativeKFXGenerator:
                         for f in (
                             FLAG_BOLD,
                             FLAG_ITALIC,
+                            FLAG_NOT_BOLD,
+                            FLAG_NOT_ITALIC,
                             FLAG_SUPER,
                             FLAG_SUB,
                             FLAG_UNDERLINE,

@@ -25,6 +25,8 @@ from .image_optimize import GIF_SIGNATURES, gif_to_png, optimize_images
 from .inline_style import (
     FLAG_BOLD,
     FLAG_ITALIC,
+    FLAG_NOT_BOLD,
+    FLAG_NOT_ITALIC,
     FLAG_PRE,
     FLAG_PRE_LINE,
     FLAG_STRIKE,
@@ -48,6 +50,8 @@ from .native_generator import NativeKFXGenerator
 
 _ITALIC_TAGS = {"em", "i"}
 _BOLD_TAGS = {"strong", "b"}
+#: The flag a run set back to normal carries, for each emphasis (#367 review).
+_NOT_FLAG = {FLAG_BOLD: FLAG_NOT_BOLD, FLAG_ITALIC: FLAG_NOT_ITALIC}
 _SUPER_TAGS = {"sup"}
 _SUB_TAGS = {"sub"}
 _UNDERLINE_TAGS = {"u", "ins"}
@@ -912,7 +916,12 @@ def _walk_inline(
                         # Swapped for an effect kfxgen can't draw yet: the
                         # tag's style keeps the words emphasised.
                         continue
-                    cur.discard(flag)
+                    if flag in cur:
+                        cur.discard(flag)
+                    elif before:
+                        # The emphasis is the paragraph's own, not a flag
+                        # of this run's: say normal (#367 review).
+                        cur.add(_NOT_FLAG[flag])
             if emphasis[2] != parent_emphasis[2]:
                 # Monospace starts, ends, or changes family (#242).
                 cur = {f for f in cur if mono_families((f,)) is None}
