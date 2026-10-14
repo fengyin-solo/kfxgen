@@ -97,6 +97,8 @@ def _px(css, body, find=".//{*}p", **doc):
         ("0.3em", 4.8),
         ("6em", 96.0),
         ("large", 18.0),
+        ("2ex", 16.0),
+        ("1ch", 8.0),
     ],
 )
 def test_a_paragraph_size_in_css_px(value, expected):
@@ -158,7 +160,14 @@ def test_compute_block_style_carries_the_px_size():
 # --- The generator: sizes against the book's main text --------------------
 
 #: What the resolver reports, in CSS px, by class or else tag.
-PX = {"small": 12.8, "big": 32.0, "s15": 24.0, "cap": 12.8, "main": 14.4}
+PX = {
+    "small": 12.8,
+    "big": 32.0,
+    "s15": 24.0,
+    "cap": 12.8,
+    "main": 14.4,
+    "norm": 16.0,
+}
 PX_BY_TAG = {"sup": 16 / 1.2, "h2": 24.0}
 
 #: Main text, long enough that its size is the book's main size.
@@ -280,6 +289,65 @@ def test_a_sized_word_is_measured_against_the_main_text(tmp_path):
     _, runs = _found(_book(tmp_path, body))["A BOOM."]
     (style,) = [s for t, s in runs if t == "BOOM"]
     assert _fs(style) == pytest.approx(24 / 14.4, abs=1e-4)
+
+
+@pytest.mark.unit
+def test_main_text_sized_on_a_span_is_the_main_size(tmp_path):
+    """Each paragraph's text in a 0.8em span: Previewer writes no size on
+    the paragraphs or the runs, and the h2 is 1.5 x 16 / 12.8 (#375 review)."""
+    paras = "".join(f'<p><span class="cap">{MAIN} {i}</span></p>' for i in range(5))
+    found = _found(_book(tmp_path, paras + "<h2>Heading two</h2>", title="Other"))
+    style, runs = found[f"{MAIN} 0"]
+    assert _fs(style) is None
+    assert runs == []
+    assert _fs(found["Heading two"][0]) == pytest.approx(1.875)
+
+
+@pytest.mark.unit
+def test_a_word_at_the_main_size_in_a_big_paragraph_says_1(tmp_path):
+    """Previewer writes 1 for it; without a size it takes the paragraph's."""
+    body = FILLER + '<p class="big">Big <span class="norm">plain</span> words.</p>'
+    _, runs = _found(_book(tmp_path, body))["Big plain words."]
+    (style,) = [s for t, s in runs if t == "plain"]
+    assert _fs(style) == pytest.approx(1.0)
+
+
+@pytest.mark.unit
+def test_a_sized_word_inside_a_sized_word_has_its_own_size(tmp_path):
+    body = FILLER + (
+        '<p>A <span class="s15">big <span class="cap">small</span> big</span>.</p>'
+    )
+    _, runs = _found(_book(tmp_path, body))["A big small big."]
+    sizes = {t: _fs(s) for t, s in runs}
+    assert sizes["small"] == pytest.approx(0.8)
+    assert sizes["big "] == pytest.approx(1.5)
+
+
+@pytest.mark.unit
+def test_a_nested_sized_run_carries_one_size():
+    from kfxgen.inline_style import SIZE_FLAG
+
+    xhtml = (
+        f'<html xmlns="{XHTML}"><body><p>A <span class="s15">big '
+        '<span class="cap">small</span></span>.</p></body></html>'
+    )
+    (block,) = _conv.extract_blocks_from_html(
+        etree.fromstring(xhtml.encode()), style_resolver=_css_px
+    )
+    for _s, _n, flags in block["spans"]:
+        sizes = [f for f in flags if isinstance(f, tuple) and f[0] == SIZE_FLAG]
+        assert len(sizes) <= 1, sizes
+
+
+@pytest.mark.unit
+def test_an_unsized_tag_carries_no_size():
+    from kfxgen.inline_style import run_font_size
+
+    xhtml = f'<html xmlns="{XHTML}"><body><p>A <i>slanted</i> word.</p></body></html>'
+    (block,) = _conv.extract_blocks_from_html(
+        etree.fromstring(xhtml.encode()), style_resolver=_css_px
+    )
+    assert [run_font_size(flags) for _s, _n, flags in block["spans"]] == [None]
 
 
 @pytest.mark.unit

@@ -2040,6 +2040,7 @@ class NativeKFXGenerator:
         baseline_style=None,
         no_align=False,
         space_above=None,
+        explicit_size=False,
     ):
         """
         Builds Fragment $157 (Style Definition).
@@ -2160,7 +2161,9 @@ class NativeKFXGenerator:
 
         # Only set font-size when non-default — lets Kindle use its default for normal text
         # Reference KFX files omit font-size on most styles and only set it for headings/small text
-        if font_size != 1.0:
+        # `explicit_size`: a run back at the main size inside a sized
+        # paragraph says 1, or it takes the paragraph's size (#241).
+        if font_size != 1.0 or explicit_size:
             value[IS("$16")] = IonStruct(
                 IS("$307"), IonDecimal(str(font_size)), IS("$306"), IS("$505")
             )  # rem
@@ -4650,15 +4653,32 @@ class NativeKFXGenerator:
             run_font_size,
         )
 
+        def _chars_by_px(chunk):
+            # Each character at its run's size, or else its block's (#375
+            # review: a book can size its text on a span in every paragraph).
+            px = (chunk.get("block_style") or {}).get("font_size")
+            counts = collections.Counter()
+            if not px or chunk.get("type") in ("open", "close", "rule", "image"):
+                return counts
+            in_runs = 0
+            for _s, length, flags in chunk.get("spans") or []:
+                run_px = run_font_size(flags)
+                if run_px:
+                    counts[run_px] += length
+                    in_runs += length
+            counts[px] += len(chunk.get("text") or "") - in_runs
+            return counts
+
+        def _most(counts):
+            return max(sorted(counts), key=counts.get) if counts else None
+
         # The book's main text size: the CSS size most of its text has. Sizes
         # are written against it, so the main text is the reader's own size,
         # as Kindle Previewer writes them (#241).
         text_px = collections.Counter()
         for chunk in all_chunks:
-            px = (chunk.get("block_style") or {}).get("font_size")
-            if px and chunk.get("type") not in ("open", "close", "rule", "image"):
-                text_px[px] += len(chunk.get("text") or "")
-        main_px = max(sorted(text_px), key=text_px.get) if text_px else None
+            text_px.update(_chars_by_px(chunk))
+        main_px = _most(text_px)
 
         def _rem(px):
             # A CSS px size as `$16` says it: against the main text size.
@@ -4666,11 +4686,17 @@ class NativeKFXGenerator:
                 return 1.0
             return round(px / main_px, 4)
 
-        def _block_font_size(ch_idx, bs):
+        def _block_font_size(ch_idx, chunk):
             # A page kfxgen sizes keeps its size (a copyright page); any other
-            # block takes its CSS size.
+            # block takes its CSS size, or the size of a span holding all its
+            # text, as in Previewer's output (#375 review).
             fs = chapters[ch_idx].get("font_size", 1.0)
-            return fs if fs != 1.0 else _rem(bs.get("font_size"))
+            if fs != 1.0:
+                return fs
+            counts = +_chars_by_px(chunk)
+            if len(counts) == 1:
+                return _rem(next(iter(counts)))
+            return _rem((chunk.get("block_style") or {}).get("font_size"))
 
         def _family(family_list, bold, italic):
             # An embedded face wins; with none, monospace text is written
@@ -4691,6 +4717,7 @@ class NativeKFXGenerator:
             blk_italic=False,
             in_cell=False,
             sized=True,
+            blk_fs=1.0,
         ):
             # Effective emphasis = inline run flags OR the block's CSS emphasis.
             # The applied $157 always carries the run's own weight/style ($13/$12)
@@ -4713,9 +4740,11 @@ class NativeKFXGenerator:
             if fam:
                 attrs["font_family"] = fam
             size = run_font_size(flags) if sized else None
-            if size is not None:
-                # Its own size (#241).
+            if size is not None and _rem(size) != blk_fs:
+                # Its own size (#241); 1 is written too, when the paragraph's
+                # isn't (#375 review).
                 attrs["font_size"] = _rem(size)
+                attrs["explicit_size"] = attrs["font_size"] == 1.0
             # Superscript/subscript: reduced font-size plus a $44 baseline
             # style, matching the reference noteref character styles. <sup>
             # wins if a run is somehow marked both. (#52, #123)
@@ -4794,9 +4823,7 @@ class NativeKFXGenerator:
                             _cell_style(
                                 chunk["cell"],
                                 chunk.get("block_style") or {},
-                                _block_font_size(
-                                    ch_idx, chunk.get("block_style") or {}
-                                ),
+                                _block_font_size(ch_idx, chunk),
                             )
                         )
                     else:
@@ -4930,7 +4957,7 @@ class NativeKFXGenerator:
                     entry_link_text_lengths.append(len(chunk["text"]))
                 else:
                     bs = chunk.get("block_style") or {}
-                    attrs = {"font_size": _block_font_size(ch_idx, bs)}
+                    attrs = {"font_size": _block_font_size(ch_idx, chunk)}
                     if bs.get("align"):
                         attrs["align"] = bs["align"]
                     if bs.get("indent"):
@@ -4990,6 +5017,7 @@ class NativeKFXGenerator:
                 # A run that is ONLY a link gets no $157: reference KFX leaves
                 # link spans unstyled and lets the reader render them. (#53)
                 spans_out = []
+                blk_fs = _block_font_size(ch_idx, chunk)
                 for s, length, flags in chunk_spans:
                     target = _link_target(flags)
                     anchor = body_anchor_map.get(target) if target else None
@@ -5009,8 +5037,17 @@ class NativeKFXGenerator:
                     # kfxgen's chapter heading has its own size: a sized run
                     # in the book's heading doesn't change it (#241).
                     sized = chunk_idx not in heading_chunk_indices
-                    if sized and run_font_size(flags) is not None:
+                    run_px = run_font_size(flags)
+                    if sized and run_px is not None and _rem(run_px) != blk_fs:
                         has_emphasis = True
+                    elif (
+                        not anchor
+                        and flags
+                        and all(run_font_size((f,)) is not None for f in flags)
+                    ):
+                        # Only a size, and the paragraph's: no run, as a
+                        # paragraph wholly in a sized span has none (#375).
+                        continue
                     style = (
                         _emphasis_style(
                             flags,
@@ -5019,6 +5056,7 @@ class NativeKFXGenerator:
                             _blk_i,
                             in_cell="cell" in chunk or "in_header_cell" in chunk,
                             sized=sized,
+                            blk_fs=blk_fs,
                         )
                         if has_emphasis or not anchor
                         else None
