@@ -598,6 +598,7 @@ def test_blocks_block_style_from_resolver():
         "font_family": [],
         "bold": False,
         "italic": False,
+        "font_size": None,
     }
     assert blocks[1]["block_style"] == {
         "align": None,
@@ -607,6 +608,7 @@ def test_blocks_block_style_from_resolver():
         "font_family": [],
         "bold": False,
         "italic": False,
+        "font_size": None,
     }
 
 
@@ -1206,7 +1208,7 @@ def test_style_resolver_reads_inherited_text_align_via_getitem():
         _silent_log(),
         stylizer_factory=lambda oeb, item: _FakeStylizer(st),
     )
-    assert resolver(object())["text-align"] == "center"
+    assert resolver(etree.Element("p"))["text-align"] == "center"
 
 
 @pytest.mark.unit
@@ -1217,7 +1219,7 @@ def test_style_resolver_unstyled_align_is_auto_then_ignored():
     resolver = _conv._build_style_resolver(
         None, None, _silent_log(), stylizer_factory=lambda oeb, item: _FakeStylizer(st)
     )
-    assert resolver(object())["text-align"] == "auto"
+    assert resolver(etree.Element("p"))["text-align"] == "auto"
     from kfxgen.inline_style import compute_block_style
 
     assert compute_block_style({"text-align": "auto"})["align"] is None

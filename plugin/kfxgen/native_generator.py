@@ -1,3 +1,4 @@
+import collections
 import errno
 import hashlib
 import logging
@@ -4646,7 +4647,30 @@ class NativeKFXGenerator:
             FLAG_UNDERLINE,
             is_monospace,
             mono_families,
+            run_font_size,
         )
+
+        # The book's main text size: the CSS size most of its text has. Sizes
+        # are written against it, so the main text is the reader's own size,
+        # as Kindle Previewer writes them (#241).
+        text_px = collections.Counter()
+        for chunk in all_chunks:
+            px = (chunk.get("block_style") or {}).get("font_size")
+            if px and chunk.get("type") not in ("open", "close", "rule", "image"):
+                text_px[px] += len(chunk.get("text") or "")
+        main_px = max(sorted(text_px), key=text_px.get) if text_px else None
+
+        def _rem(px):
+            # A CSS px size as `$16` says it: against the main text size.
+            if not px or not main_px:
+                return 1.0
+            return round(px / main_px, 4)
+
+        def _block_font_size(ch_idx, bs):
+            # A page kfxgen sizes keeps its size (a copyright page); any other
+            # block takes its CSS size.
+            fs = chapters[ch_idx].get("font_size", 1.0)
+            return fs if fs != 1.0 else _rem(bs.get("font_size"))
 
         def _family(family_list, bold, italic):
             # An embedded face wins; with none, monospace text is written
@@ -4661,7 +4685,12 @@ class NativeKFXGenerator:
         # 4 writes it (#367); #34 had kept no-font books unchanged.
 
         def _emphasis_style(
-            flags, family_list, blk_bold=False, blk_italic=False, in_cell=False
+            flags,
+            family_list,
+            blk_bold=False,
+            blk_italic=False,
+            in_cell=False,
+            sized=True,
         ):
             # Effective emphasis = inline run flags OR the block's CSS emphasis.
             # The applied $157 always carries the run's own weight/style ($13/$12)
@@ -4683,6 +4712,10 @@ class NativeKFXGenerator:
                 attrs["upright"] = True
             if fam:
                 attrs["font_family"] = fam
+            size = run_font_size(flags) if sized else None
+            if size is not None:
+                # Its own size (#241).
+                attrs["font_size"] = _rem(size)
             # Superscript/subscript: reduced font-size plus a $44 baseline
             # style, matching the reference noteref character styles. <sup>
             # wins if a run is somehow marked both. (#52, #123)
@@ -4761,7 +4794,9 @@ class NativeKFXGenerator:
                             _cell_style(
                                 chunk["cell"],
                                 chunk.get("block_style") or {},
-                                chapters[ch_idx].get("font_size", 1.0),
+                                _block_font_size(
+                                    ch_idx, chunk.get("block_style") or {}
+                                ),
                             )
                         )
                     else:
@@ -4895,7 +4930,7 @@ class NativeKFXGenerator:
                     entry_link_text_lengths.append(len(chunk["text"]))
                 else:
                     bs = chunk.get("block_style") or {}
-                    attrs = {"font_size": chapters[ch_idx].get("font_size", 1.0)}
+                    attrs = {"font_size": _block_font_size(ch_idx, bs)}
                     if bs.get("align"):
                         attrs["align"] = bs["align"]
                     if bs.get("indent"):
@@ -4971,6 +5006,11 @@ class NativeKFXGenerator:
                             FLAG_STRIKE,
                         )
                     ) or bool(mono_families(flags))
+                    # kfxgen's chapter heading has its own size: a sized run
+                    # in the book's heading doesn't change it (#241).
+                    sized = chunk_idx not in heading_chunk_indices
+                    if sized and run_font_size(flags) is not None:
+                        has_emphasis = True
                     style = (
                         _emphasis_style(
                             flags,
@@ -4978,6 +5018,7 @@ class NativeKFXGenerator:
                             _blk_b,
                             _blk_i,
                             in_cell="cell" in chunk or "in_header_cell" in chunk,
+                            sized=sized,
                         )
                         if has_emphasis or not anchor
                         else None

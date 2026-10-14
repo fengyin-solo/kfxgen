@@ -320,6 +320,32 @@ def mono_families(flags):
     return None
 
 
+SIZE_FLAG = "size"
+
+
+def css_font_size(css):
+    """An element's font size in CSS px, as the resolver reports it, or None
+    without one (#241)."""
+    size = (css or {}).get("font-size")
+    if isinstance(size, bool) or not isinstance(size, (int, float)) or size <= 0:
+        return None
+    return size
+
+
+def make_size_flag(size):
+    """The flag-set member giving a run its own font size (#241), in CSS px.
+    The generator writes it against the book's main text size."""
+    return (SIZE_FLAG, size)
+
+
+def run_font_size(flags):
+    """The size a run's size flag carries, or None."""
+    for flag in flags:
+        if isinstance(flag, tuple) and len(flag) == 2 and flag[0] == SIZE_FLAG:
+            return flag[1]
+    return None
+
+
 def link_target(flags):
     """Return the link target carried by a run's flag set, or None."""
     for flag in flags:
@@ -415,4 +441,7 @@ def compute_block_style(css):
         "bold": str(css.get("font-weight") or "").strip().lower() == "bolder"
         or parse_weight(css.get("font-weight")) >= BOLD_WEIGHT_THRESHOLD,
         "italic": parse_style(css.get("font-style")),
+        # In CSS px; the generator measures it against the book's main
+        # text size (#241).
+        "font_size": css_font_size(css),
     }
