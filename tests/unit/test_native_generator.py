@@ -1557,8 +1557,10 @@ def test_block_level_bold_selects_bold_face():
     assert "foo-700" in fams  # block-level bold -> real bold face
 
 
-def test_block_level_bold_no_font_table_unchanged():
-    # No embedded fonts: block bold must NOT synthesize (preserve byte-identity).
+def test_block_level_bold_without_fonts_is_written():
+    # No embedded fonts: block bold is still written as $13: $361, as Kindle
+    # Previewer 4 writes it (#367). #34 had left it out to keep no-font
+    # books byte-identical.
     g = NativeKFXGenerator()
     chapter = {
         "title": "C1",
@@ -1566,15 +1568,13 @@ def test_block_level_bold_no_font_table_unchanged():
         "blocks": [{"text": "Bold para.", "spans": [], "block_style": {"bold": True}}],
     }
     g.generate_full_book(title="T", author="A", chapters=[chapter])
-    # body style (kind "") must not carry synthetic bold ($13:$361) from a
-    # block-level CSS bold when there is no font table.
     body = [
         f
         for f in g.fragments
         if str(f.ftype) == "$157" and not str(f.fid).endswith(("_em", "_h", "_link"))
     ]
     assert body, "expected a body style"
-    assert all(f.value.get(IS("$13")) != IS("$361") for f in body)
+    assert any(f.value.get(IS("$13")) == IS("$361") for f in body)
 
 
 # ── #52: superscript / subscript character styles ────────────────────────────

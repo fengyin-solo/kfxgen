@@ -16,6 +16,11 @@ FLAG_SUB = "sub"
 #: Text decoration lines (#237). Kindle Previewer writes them as $23 and $27.
 FLAG_UNDERLINE = "underline"
 FLAG_STRIKE = "line-through"
+#: A run its CSS sets back to normal inside a bold or italic paragraph: the
+#: paragraph's own emphasis is no flag of the run's to take away, so the
+#: run says normal instead (#367 review).
+FLAG_NOT_BOLD = "not-bold"
+FLAG_NOT_ITALIC = "not-italic"
 
 #: White-space modes, carried on a segment's flags by the converter and read
 #: by `normalize_runs_with_anchors`, which removes them again: they choose how
@@ -406,6 +411,8 @@ def compute_block_style(css):
         # Block-level emphasis: a paragraph made bold/italic via CSS
         # (e.g. `p.lead { font-weight: bold }`) rather than an inline tag.
         # Used to select the embedded bold/italic face for the whole block.
-        "bold": parse_weight(css.get("font-weight")) >= BOLD_WEIGHT_THRESHOLD,
+        # `bolder` is bold, as it is for a run (#367 review).
+        "bold": str(css.get("font-weight") or "").strip().lower() == "bolder"
+        or parse_weight(css.get("font-weight")) >= BOLD_WEIGHT_THRESHOLD,
         "italic": parse_style(css.get("font-style")),
     }

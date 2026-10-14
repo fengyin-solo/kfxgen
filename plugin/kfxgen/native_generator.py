@@ -2017,6 +2017,7 @@ class NativeKFXGenerator:
         margin_top=None,
         is_heading=False,
         italic=False,
+        upright=False,
         align=None,
         text_indent=None,
         margin_left=None,
@@ -2043,6 +2044,10 @@ class NativeKFXGenerator:
                 as Kindle Previewer 4 writes it (#237)
             bold: If True, set font-weight: bold ($13: $361)
             italic: If True, add font-style: italic ($12: $382)
+            upright: If True and not italic, write font-style: normal
+                ($12: $350), for a run set upright inside an italic
+                paragraph; without it the run takes the paragraph's italic
+                (#367 review)
             is_heading: If True, omit the body top margin ($47); headings space
                         via $46 (margin_top param) instead.
             align: Text alignment override. If a key in ALIGN_MAP ("left", "right", "center"),
@@ -2156,6 +2161,8 @@ class NativeKFXGenerator:
         # $12 = font-style: $382 = italic (authoritative, jhowell kfxlib)
         if italic:
             value[IS("$12")] = IS("$382")
+        elif upright:
+            value[IS("$12")] = IS("$350")
 
         # $11 = font-family (#15). Set only when an embedded face was matched;
         # its absence preserves byte-identical output for non-font books.
@@ -4610,6 +4617,8 @@ class NativeKFXGenerator:
         from .inline_style import (
             FLAG_BOLD,
             FLAG_ITALIC,
+            FLAG_NOT_BOLD,
+            FLAG_NOT_ITALIC,
             FLAG_STRIKE,
             FLAG_SUB,
             FLAG_SUPER,
@@ -4627,9 +4636,8 @@ class NativeKFXGenerator:
             return fam
 
         # Block-level emphasis (CSS `font-weight`/`font-style` on the paragraph)
-        # is composed with inline-run flags only when the book embeds fonts, so
-        # books with no embeddable fonts stay byte-identical.
-        has_fonts = bool(self.font_table.faces)
+        # is written whether or not the book embeds fonts, as Kindle Previewer
+        # 4 writes it (#367); #34 had kept no-font books unchanged.
 
         def _emphasis_style(
             flags, family_list, blk_bold=False, blk_italic=False, in_cell=False
@@ -4640,11 +4648,18 @@ class NativeKFXGenerator:
             # (#50): a real face is used when present, synthesized otherwise. With
             # no embedded family, font_family is omitted and bold/italic still
             # drive synthetic rendering -> byte-identical to today's output.
-            bold = (FLAG_BOLD in flags) or blk_bold
-            italic = (FLAG_ITALIC in flags) or blk_italic
+            # A run its CSS set back to normal stays normal (#367 review).
+            bold = (FLAG_BOLD in flags) or (blk_bold and FLAG_NOT_BOLD not in flags)
+            italic = (FLAG_ITALIC in flags) or (
+                blk_italic and FLAG_NOT_ITALIC not in flags
+            )
             mono = mono_families(flags)
             fam = _family(list(mono) if mono else family_list, bold, italic)
             attrs = {"italic": italic, "bold": bold}
+            if blk_italic and not italic:
+                # Set back to upright inside an italic paragraph: say so, or
+                # the run takes the paragraph's italic (#367 review).
+                attrs["upright"] = True
             if fam:
                 attrs["font_family"] = fam
             # Superscript/subscript: reduced font-size plus a $44 baseline
@@ -4668,8 +4683,8 @@ class NativeKFXGenerator:
             It must declare the weight and style of the face it names, or the
             Kindle falls back from the embedded face (#50). A header is bold
             on its own."""
-            blk_bold = bool(bs.get("bold")) if has_fonts else False
-            blk_italic = bool(bs.get("italic")) if has_fonts else False
+            blk_bold = bool(bs.get("bold"))
+            blk_italic = bool(bs.get("italic"))
             cell_bold = bool(cell["header"]) or blk_bold
             cell_fam = _family(bs.get("font_family", []), cell_bold, blk_italic)
             cattrs = {
@@ -4871,13 +4886,13 @@ class NativeKFXGenerator:
                     if chunk.get("space_above") is not None:
                         attrs["space_above"] = chunk["space_above"]
                     # Body run: match the block's font-family, honouring any
-                    # block-level CSS bold/italic (only when fonts are embedded,
-                    # so no-font books keep byte-identical $157 output). The entry
-                    # $157 carries the block's own weight/style ($13/$12) so it
-                    # matches the $262 face descriptor the Kindle resolves against
-                    # (#50) — the real face when present, synthesized otherwise.
-                    blk_bold = bool(bs.get("bold")) if has_fonts else False
-                    blk_italic = bool(bs.get("italic")) if has_fonts else False
+                    # block-level CSS bold/italic. The entry $157 carries the
+                    # block's own weight/style ($13/$12) so it matches the $262
+                    # face descriptor the Kindle resolves against (#50) — the
+                    # real face when present, synthesized otherwise, with or
+                    # without an embedded family (#367).
+                    blk_bold = bool(bs.get("bold"))
+                    blk_italic = bool(bs.get("italic"))
                     if chunk.get("in_header_cell"):
                         # A paragraph in a header cell is bold, as a header
                         # cell's own text is (#261).
@@ -4886,10 +4901,10 @@ class NativeKFXGenerator:
                     fam = _family(bs.get("font_family", []), blk_bold, blk_italic)
                     if fam:
                         attrs["font_family"] = fam
-                        if blk_bold:
-                            attrs["bold"] = True
-                        if blk_italic:
-                            attrs["italic"] = True
+                    if blk_bold:
+                        attrs["bold"] = True
+                    if blk_italic:
+                        attrs["italic"] = True
                     cell = chunk.get("cell")
                     if cell is not None:
                         entry_styles.append(_cell_style(cell, bs, attrs["font_size"]))
@@ -4905,11 +4920,11 @@ class NativeKFXGenerator:
                 # fonts, exactly as its cell style is; a span style names the
                 # run's whole face, so it must say bold too. (#219)
                 _blk_b = (
-                    (bool(_cbs.get("bold")) if has_fonts else False)
+                    bool(_cbs.get("bold"))
                     or bool((chunk.get("cell") or {}).get("header"))
                     or bool(chunk.get("in_header_cell"))
                 )
-                _blk_i = bool(_cbs.get("italic")) if has_fonts else False
+                _blk_i = bool(_cbs.get("italic"))
                 # A run may be emphasis, a link, or both. Its visual style is
                 # whatever the flags say; its $179 is the resolved anchor, or
                 # None when nothing in the book declares the target — an
@@ -4925,6 +4940,8 @@ class NativeKFXGenerator:
                         for f in (
                             FLAG_BOLD,
                             FLAG_ITALIC,
+                            FLAG_NOT_BOLD,
+                            FLAG_NOT_ITALIC,
                             FLAG_SUPER,
                             FLAG_SUB,
                             FLAG_UNDERLINE,
