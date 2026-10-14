@@ -3900,7 +3900,7 @@ def _section_heads(coords, flat, spine_items, nav_flat, file_offset):
     holding a contents listing it rebuilds (#132). Text merged into those
     would be lost with them."""
     heads = []
-    for k, (fi, si, title, _key) in enumerate(coords):
+    for k, (fi, si, title, _key, _level) in enumerate(coords):
         if (
             k == 0
             or coords[k - 1][1] != si
@@ -3959,7 +3959,8 @@ def _assemble_chapters_by_coordinate(
         if _f:
             toc_anchors.add(_f)
 
-    coords = []  # (flat_index, spine_index, title, anchor key or None)
+    # (flat_index, spine_index, title, anchor key or None, contents level)
+    coords = []
     last_block_in_file = {}
     prev_flat = -1
     for entry in toc_entries:
@@ -4006,7 +4007,7 @@ def _assemble_chapters_by_coordinate(
         ):
             flat[fi]["anchor_keys"].append(key)
             flat[fi].setdefault("anchor_offsets", {})[key] = 0
-        coords.append((fi, si, entry["title"], key))
+        coords.append((fi, si, entry["title"], key, entry.get("level", 0)))
         prev_flat = fi
         last_block_in_file[si] = bi
 
@@ -4031,7 +4032,7 @@ def _assemble_chapters_by_coordinate(
     # class="toc">`); otherwise it belongs to the chapter holding the block
     # before it. A listing at the start of its file stays with that file. (#276)
     starts = {}
-    for fi, si, _title, _key in coords:
+    for fi, si, _title, _key, _level in coords:
         starts[fi] = si
     toc_frag_at = {}
     for entry in toc_entries:
@@ -4109,7 +4110,7 @@ def _assemble_chapters_by_coordinate(
                 chapters.append(ch)
 
     heads = _section_heads(coords, flat, spine_items_ordered, nav_flat, file_offset)
-    for k, (fi, si, title, _key) in enumerate(coords):
+    for k, (fi, si, title, _key, _level) in enumerate(coords):
         if not heads[k]:
             continue
         nxt = next((j for j in range(k + 1, len(coords)) if heads[j]), None)
@@ -4123,8 +4124,10 @@ def _assemble_chapters_by_coordinate(
         if ch:
             if _is_file_name_label(title, spine_items_ordered[si]["href"]):
                 _retitle_from_heading(ch)
+            # Its depth in the book's contents, for the nesting (#313).
+            ch["toc_level"] = coords[k][4]
             subs = [
-                {"title": c[2], "key": c[3]}
+                {"title": c[2], "key": c[3], "level": c[4]}
                 for c in coords[k + 1 : nxt if nxt is not None else None]
             ]
             if subs:
@@ -4738,12 +4741,29 @@ def _rebuild_contents_page(contents_ch, all_chapters, log):
             # too: its title is a label kfxgen made up, such as a file name.
             # (#284 review: 835 of pg22210's 992 entries.)
             continue
-        toc_links.append({"text": ch["title"], "target_chapter_idx": i})
+        toc_links.append(
+            {
+                "text": ch["title"],
+                "target_chapter_idx": i,
+                "level": ch.get("toc_level", 0),
+            }
+        )
         # Places in the section the contents name, after it (#363).
         toc_links.extend(
-            {"text": sub["title"], "target_chapter_idx": i, "target_key": sub["key"]}
+            {
+                "text": sub["title"],
+                "target_chapter_idx": i,
+                "target_key": sub["key"],
+                "level": sub.get("level", 0),
+            }
             for sub in ch.get("sub_entries") or ()
         )
+    # Indented by depth, counted from the shallowest entry listed: a book's
+    # contents often sit under one wrapper entry (its title) that this page
+    # leaves out (#313).
+    top = min((link["level"] for link in toc_links), default=0)
+    for link in toc_links:
+        link["level"] -= top
 
     # Illustrations that happen to sit in this section are content, and are
     # kept even though the text around them is not. The reason to discard a

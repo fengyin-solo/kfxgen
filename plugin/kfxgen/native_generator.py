@@ -1038,6 +1038,23 @@ def _table_has_zoom(tbl):
     )
 
 
+def _nest_nav_entries(entries):
+    """Contents entries in reading order, each with a "level", as a tree:
+    each entry's "children" are the entries after it at a deeper level, up to
+    the next at its own level or shallower (#313). An entry whose parent was
+    left out goes under the nearest entry above it at a shallower level; one
+    with none is a top-level entry."""
+    roots, open_ = [], []  # open_: (level, entry) from the top down
+    for e in entries:
+        node = {**e, "children": []}
+        level = e.get("level", 0)
+        while open_ and open_[-1][0] >= level:
+            open_.pop()
+        (open_[-1][1]["children"] if open_ else roots).append(node)
+        open_.append((level, node))
+    return roots
+
+
 class NativeKFXGenerator:
     """
     Generates KFX files from scratch using standard symbols and deterministic
@@ -1532,9 +1549,10 @@ class NativeKFXGenerator:
           2. Landmarks ($235: $236) — structural landmarks (e.g., bodymatter start)
 
         Args:
-            toc_entries: List of dicts with 'title' and 'position' keys, and
-                an 'offset' into that position for an entry that names a
-                place inside a paragraph (#363)
+            toc_entries: List of dicts with 'title' and 'position' keys, an
+                'offset' into that position for an entry that names a place
+                inside a paragraph (#363), and a 'level', its depth in the
+                book's contents (#313), in reading order
             cover_position: Position of the synthetic cover section, when the
                 book has one. The $233 landmark then marks the cover (#160).
 
@@ -1594,22 +1612,22 @@ class NativeKFXGenerator:
             ),
         )
 
-        # Build TOC nav_units, each annotated with $393
-        nav_units = []
-        for entry in toc_entries:
-            title = entry["title"]
-            position = entry["position"]
-
-            unit = IonAnnotation(
-                [IS("$393")],
+        # Build TOC nav_units, each annotated with $393. An entry's children
+        # go in its own $247, as Kindle Previewer 4 nests them (#313).
+        def nav_unit(entry):
+            fields = [
+                IS("$241"),
+                IonStruct(IS("$244"), entry["title"]),
+                IS("$246"),
                 IonStruct(
-                    IS("$241"),
-                    IonStruct(IS("$244"), title),
-                    IS("$246"),
-                    IonStruct(IS("$155"), position, IS("$143"), entry.get("offset", 0)),
+                    IS("$155"), entry["position"], IS("$143"), entry.get("offset", 0)
                 ),
-            )
-            nav_units.append(unit)
+            ]
+            if entry["children"]:
+                fields += [IS("$247"), [nav_unit(c) for c in entry["children"]]]
+            return IonAnnotation([IS("$393")], IonStruct(*fields))
+
+        nav_units = [nav_unit(e) for e in _nest_nav_entries(toc_entries)]
 
         # TOC container annotated with $391, type $212
         toc_container = IonAnnotation(
@@ -3162,13 +3180,24 @@ class NativeKFXGenerator:
         nav_entries = []
         for ch, pos in zip(chapters, toc_positions):
             if not ch.get("_omit_from_toc"):
-                nav_entries.append({"title": ch["title"], "position": pos})
+                nav_entries.append(
+                    {
+                        "title": ch["title"],
+                        "position": pos,
+                        "level": ch.get("toc_level", 0),
+                    }
+                )
             # Entries that name a place in the section, not a section of
             # their own (#363). One that can't be found opens the section.
             for sub in ch.get("sub_entries") or ():
                 at, offset = ch_data["key_positions"].get(sub["key"], (pos, 0))
                 nav_entries.append(
-                    {"title": sub["title"], "position": at, "offset": offset}
+                    {
+                        "title": sub["title"],
+                        "position": at,
+                        "offset": offset,
+                        "level": sub.get("level", 0),
+                    }
                 )
         # The synthetic cover chapter is always first when present (#32).
         cover_position = section_positions[0] if chapters[0].get("_is_cover") else None
@@ -3514,6 +3543,7 @@ class NativeKFXGenerator:
         chapter_chunk_ranges = []
         heading_chunk_indices = set()
         toc_link_chunks = {}
+        toc_link_levels = {}  # chunk index -> depth in the contents (#313)
 
         def _emit_text_chunks(para_text, preformatted=False):
             """Yield typed chunks from a paragraph that may contain image tokens.
@@ -3993,6 +4023,7 @@ class NativeKFXGenerator:
                         link["target_chapter_idx"],
                         link.get("target_key"),
                     )
+                    toc_link_levels[chunk_idx] = link.get("level", 0)
             else:
                 # The title is cut from the body only because the heading
                 # prints it. With the heading suppressed by the caller, the
@@ -4810,7 +4841,19 @@ class NativeKFXGenerator:
                     # Link entry: entry uses body style; link styling lives
                     # inside the $142 span via entry_link_styles. Reference
                     # has entry $157 = body style, span $157 = link style.
-                    entry_styles.append(story_names[ch_idx])
+                    level = toc_link_levels.get(chunk_idx, 0)
+                    if level:
+                        # Indented by depth, 6.25% a level: Kindle
+                        # Previewer's width for a 2em margin (#238, #313).
+                        entry_styles.append(
+                            _allocate_style(
+                                "",
+                                font_size=chapters[ch_idx].get("font_size", 1.0),
+                                margin_left=(f"{6.25 * level:g}", "$314"),
+                            )
+                        )
+                    else:
+                        entry_styles.append(story_names[ch_idx])
                     entry_link_targets.append(chunk_anchor_map[chunk_idx])
                     entry_link_styles.append(toc_link_style_names[ch_idx])
                     entry_link_text_lengths.append(len(chunk["text"]))
