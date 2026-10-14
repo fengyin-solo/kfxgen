@@ -20,9 +20,9 @@ title page (pg3011) showed one line per page. An entry now starts a page
 only at the start of its file or where the book's CSS breaks the page. Other
 entries are places within the page, still listed in the contents pane and on
 the Contents page, and they land on their own line. Scenes and sub-sections
-that the book runs on now run on too: in pg100, each of Shakespeare's scenes
-follows the one before on the same page instead of starting a new one
-(1,171 sections become 347).
+that the book runs on now run on too: in pg100, a scene follows the one
+before it within an act instead of starting a new page (1,171 sections
+become 347).
 
 **Nested contents (#313).** The contents pane and kfxgen's Contents page
 listed every entry at one level. Sections now sit under their chapters in
