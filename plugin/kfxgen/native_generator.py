@@ -30,6 +30,29 @@ _log = logging.getLogger(__name__)
 #: A token size hint: axis, number, unit (bare = px).
 _SIZE_HINT_RE = re.compile(r"^([wh])=(\d+(?:\.\d+)?)(%|px|em|pt)?$")
 _CSS_PX_PER_UNIT = {"px": 1.0, "em": 16.0, "pt": 4.0 / 3.0}
+#: Text column width Amazon sizes against, in CSS pixels. Recovered by
+#: dividing each sub-100% width it emits by the image's pixel width: every
+#: one resolves to this, across seven books. (#145)
+_IMAGE_COLUMN_PX = 496.0
+
+
+def _size_in_box(hint, box):
+    """A picture's size hint inside a sized box (#382): none fills the box,
+    a % is already a share of it, and a width in a length becomes one: of a
+    box in a length, picture ÷ box; of a box in %, the picture's share of
+    the page ÷ the box's (#384 review). `_parse_size_hint` caps it at the
+    box, as it caps any size at the column."""
+    if not hint:
+        return "w=100%"
+    m = _SIZE_HINT_RE.match(hint)
+    if not m or m.group(1) != "w" or m.group(3) == "%":
+        return hint
+    px = float(m.group(2)) * _CSS_PX_PER_UNIT[m.group(3) or "px"]
+    if box.get("width_px"):
+        pct = px / box["width_px"] * 100.0
+    else:
+        pct = px / _IMAGE_COLUMN_PX * 100.0 / box["width"] * 100.0
+    return f"w={pct:.3f}%"
 
 
 def _parse_size_hint(hint, column_px):
@@ -104,10 +127,22 @@ _TABLE_NODE_TYPES = {
     # A bordered or filled container around paragraphs, as Kindle Previewer
     # writes a sidebar or callout (#238).
     "box": "$270",
+    # A wrapper with a width around a picture, with no border, fill or float:
+    # the plain container Kindle Previewer writes for it (#382).
+    "frame": "$269",
     # A container around a linked picture: its $142 link covers the picture
     # (#355), as Kindle Previewer writes `<a href><img/></a>`.
     "link": "$269",
 }
+
+
+def _is_frame(box):
+    """A box drawn as Previewer's plain container: a wrapper's width around
+    a picture, with no border, fill or float (#382)."""
+    return bool(box.get("width")) and not (
+        box.get("border") or box.get("background") is not None or box.get("float")
+    )
+
 
 #: Overrides retired by #123. Warned about rather than ignored: a variable that
 #: used to change output and now cannot is exactly the silent no-op this
@@ -2285,11 +2320,16 @@ class NativeKFXGenerator:
         margin_right=None,
         space_above=None,
         space_below=None,
+        width=None,
+        float_side=None,
+        centred=False,
     ):
         """$157 for a box (#238), as Kindle Previewer 4.0.1 writes a bordered
         or filled container: border as for a table part, fill $70 (ARGB),
         padding as for a cell, side margins $48/$50 as a share of the page,
-        and space above and below ($47/$49) in line heights, em / 1.2."""
+        and space above and below ($47/$49) in line heights, em / 1.2. A
+        wrapper's width ($56, a share of the page), float ($140) and centring
+        ($580) as Previewer writes a sized wrapper around a picture (#382)."""
         self.symtab.create_local_symbol(entity_name)
         value = IonStruct(IS("$173"), IS(entity_name))
         _apply_border(value, dict(border) if border else None, is_table=False)
@@ -2308,6 +2348,14 @@ class NativeKFXGenerator:
                 value[IS(key)] = IonStruct(
                     IS("$307"), IonDecimal(f"{em / 1.2:.6g}"), IS("$306"), IS("$310")
                 )
+        if width:
+            value[IS("$56")] = IonStruct(
+                IS("$307"), IonDecimal(f"{width:.6g}"), IS("$306"), IS("$314")
+            )
+        if float_side:
+            value[IS("$140")] = IS("$59" if float_side == "left" else "$61")
+        if centred:
+            value[IS("$580")] = IS("$320")
         return YJFragment(fid=IS(entity_name), ftype=IS("$157"), value=value)
 
     def build_part_style_157(self, entity_name, border=None):
@@ -3844,7 +3892,7 @@ class NativeKFXGenerator:
             when its first paragraph has space above inside the border, its
             bottom padding grows by the same, so the text sits evenly."""
             box = dict(block["box"])
-            if _has_space_above(block["blocks"][0]):
+            if not _is_frame(box) and _has_space_above(block["blocks"][0]):
                 pad = dict(box.get("padding") or dict.fromkeys(_SIDES, 0.0))
                 if not isinstance(pad["bottom"], tuple):
                     pad["bottom"] = pad["bottom"] + _LINE_EM
@@ -3873,6 +3921,14 @@ class NativeKFXGenerator:
                     unplaced = _emit_box_chunks(kid, nxt)
                 else:
                     unplaced = _emit_paragraph(kid)
+                    if box.get("width"):
+                        # A picture's size is a share of a sized box, as
+                        # Previewer writes it (#382). Set here, not in the
+                        # token: a longer token would shift the paragraph's
+                        # runs.
+                        for ch in all_chunks[first:]:
+                            if ch.get("type") == "image":
+                                ch["size"] = _size_in_box(ch.get("size"), box)
                 if pending and len(all_chunks) > first:
                     _attach_keys(first, pending)
                     pending = []
@@ -4586,10 +4642,7 @@ class NativeKFXGenerator:
         #   both dims >= 600px           -> page
         #   both dims <= 300px, ~square  -> small
         #   else                         -> inline
-        # Text column width Amazon sizes against, in CSS pixels. Recovered by
-        # dividing each sub-100% width it emits by the image's pixel width:
-        # every one resolves to this, across seven books. (#145)
-        IMAGE_COLUMN_PX = 496.0
+        IMAGE_COLUMN_PX = _IMAGE_COLUMN_PX
 
         def _image_width_pct(w):
             """CSS width for an image `w` pixels wide, as Amazon computes it.
@@ -4955,9 +5008,12 @@ class NativeKFXGenerator:
                     entry_kinds.append(chunk["type"])
                     entry_image_specs.append(None)
                     entry_emphasis_spans.append(None)
-                    entry_nodes.append(
-                        "zoom-table" if node == "table" and chunk.get("zoom") else node
-                    )
+                    if node == "table" and chunk.get("zoom"):
+                        entry_nodes.append("zoom-table")
+                    elif node == "box" and _is_frame(chunk["box"]):
+                        entry_nodes.append("frame")
+                    else:
+                        entry_nodes.append(node)
                     widths = (
                         _column_widths_152(chunk.get("column_widths"))
                         if node == "table"
@@ -4998,6 +5054,9 @@ class NativeKFXGenerator:
                                 margin_right=box.get("margin_right"),
                                 space_above=box.get("space_above"),
                                 space_below=box.get("space_below"),
+                                width=box.get("width"),
+                                float_side=box.get("float"),
+                                centred=bool(box.get("centred")),
                             )
                         )
                     if node in ("row", "head", "body", "foot") and chunk.get("border"):
