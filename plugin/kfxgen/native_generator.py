@@ -9,7 +9,14 @@ import unicodedata
 from urllib.parse import unquote
 
 from ._img_tokens import IMG_TOKEN_RE
-from .inline_style import ALIGN_MAP, TYPOGRAPHY_KEYS, VALIGN_MAP, css_text_colour
+from .inline_style import (
+    ALIGN_MAP,
+    TYPOGRAPHY_KEYS,
+    VALIGN_MAP,
+    css_text_colour,
+    ruby_of,
+    without_ruby,
+)
 from .kfxlib_minimal.kfx_container import KfxContainer
 from .kfxlib_minimal.standard_symbols import StandardSymbolTable
 from .kfxlib_minimal.ion import IonStruct, IonDecimal, IonAnnotation, IonBLOB, IS
@@ -525,6 +532,38 @@ def _title_after_pictures(blocks, title):
             return False
         seen_picture = True
     return False
+
+
+def _ruby_heading_title(blocks, title):
+    """(The base text of a chapter's first block, its runs) when that block,
+    each reading run in after its base, is `title`; else (`title`, None)
+    (#236). calibre takes a TOC label from the book's navigation, which runs
+    the readings in, as Kindle Previewer's labels do. Matched against its
+    base, the book's heading printed under kfxgen's. A reading may be in
+    parentheses, as <rp> gives it, and spaces are ignored, as they were when
+    the heading's text held its readings (#399 QA)."""
+    blocks = _drop_edge_rules(blocks or ())
+    first = blocks[0] if blocks else None
+    if first is None or first.get("type") not in (None, "text"):
+        return title, None
+    rubies = {}
+    for s, n, flags in first.get("spans") or ():
+        ruby = ruby_of(flags)
+        if ruby:
+            rubies[ruby[0]] = (s + n, ruby[1])
+    if not rubies:
+        return title, None
+
+    def run_in(fmt):
+        text = first["text"]
+        for end, reading in sorted(rubies.values(), reverse=True):
+            text = text[:end] + fmt.format(reading) + text[end:]
+        return "".join(text.split())
+
+    if "".join(title.split()) not in {run_in(f) for f in ("{}", "({})", "（{}）")}:
+        return title, None
+    base = first["text"].strip()
+    return base, _title_spans(first, len(base))
 
 
 def _title_spans(block, length):
@@ -1287,6 +1326,60 @@ class NativeKFXGenerator:
 
         value = IonStruct(IS("$590"), features_list)
         return YJFragment(fid=IS("$348"), ftype=IS("$585"), value=value)
+
+    def _declare_ruby(self):
+        """Add `yj_ruby` 1.0 to the built $585 once a ruby is written, as Kindle
+        Previewer declares it (#236). The symbol is created last, as
+        `_declare_table_viewer`'s is."""
+        self.symtab.create_local_symbol("yj_ruby")
+        frag = next(f for f in self.fragments if f.ftype == IS("$585"))
+        frag.value[IS("$590")].append(
+            IonStruct(
+                IS("$586"),
+                "com.amazon.yjconversion",
+                IS("$492"),
+                "yj_ruby",
+                IS("$589"),
+                IonStruct(IS("version"), IonStruct(IS("$587"), 1, IS("$588"), 0)),
+            )
+        )
+
+    def build_ruby_style_157(self, entity_name):
+        """A reading's style: half the base's size at a normal line height,
+        Kindle Previewer's for every reading (#236)."""
+        self.symtab.create_local_symbol(entity_name)
+        value = IonStruct(
+            IS("$16"),
+            IonStruct(IS("$307"), IonDecimal("0.5"), IS("$306"), IS("$308")),
+            IS("$42"),
+            IS("$383"),
+            IS("$173"),
+            IS(entity_name),
+        )
+        return YJFragment(fid=IS(entity_name), ftype=IS("$157"), value=value)
+
+    def build_fragment_756(self, name, readings):
+        """A chapter's ruby fragment (#236): one text entry per reading, whose
+        `$758` is the number a base's event names. `readings` is
+        [(eid, reading)] in reading order."""
+        self.symtab.create_local_symbol(name)
+        entries = [
+            IonStruct(
+                IS("$155"),
+                eid,
+                IS("$157"),
+                IS(self.RUBY_STYLE_NAME),
+                IS("$159"),
+                IS("$269"),
+                IS("$758"),
+                number,
+                IS("$145"),
+                reading,
+            )
+            for number, (eid, reading) in enumerate(readings, 1)
+        ]
+        value = IonStruct(IS("$757"), IS(name), IS("$146"), entries)
+        return YJFragment(fid=IS(name), ftype=IS("$756"), value=value)
 
     def _declare_table_viewer(self):
         """Add `yj_table_viewer` 1 after `yj_table` in the built $585 (#254).
@@ -2859,9 +2952,12 @@ class NativeKFXGenerator:
                     # (start, length, style_name) for emphasis-only runs;
                     # (start, length, style_name|None, anchor|None) once a run
                     # can also be a link (#53). Either arity is accepted.
+                    # A fifth member is a ruby: (its chapter's ruby fragment,
+                    # its number there) (#236).
                     start, length, style_name = span_spec[:3]
                     anchor_name = span_spec[3] if len(span_spec) > 3 else None
-                    if style_name is None and anchor_name is None:
+                    ruby = span_spec[4] if len(span_spec) > 4 else None
+                    if style_name is None and anchor_name is None and ruby is None:
                         continue
                     span = IonStruct(IS("$143"), start, IS("$144"), length)
                     if anchor_name:
@@ -2870,6 +2966,10 @@ class NativeKFXGenerator:
                     if style_name:
                         self.symtab.create_local_symbol(style_name)
                         span[IS("$157")] = IS(style_name)
+                    if ruby:
+                        self.symtab.create_local_symbol(ruby[0])
+                        span[IS("$757")] = IS(ruby[0])
+                        span[IS("$758")] = ruby[1]
                     existing.append(span)
                 entry[IS("$142")] = existing
 
@@ -3424,6 +3524,7 @@ class NativeKFXGenerator:
         # Collect extra entity names from chapter content (headings, links, anchors)
         anchor_names = ch_data.get("anchor_names", [])
         extra_style_names = ch_data.get("extra_style_names", [])
+        ruby_names = ch_data.get("ruby_names", [])
 
         all_entity_names = (
             list(content_names)
@@ -3433,6 +3534,7 @@ class NativeKFXGenerator:
             + extra_style_names
             + anchor_names
             + section_ad_names
+            + ruby_names
         )
         if cover_resource_name:
             all_entity_names.append(cover_resource_name)
@@ -3480,6 +3582,8 @@ class NativeKFXGenerator:
         )
         for ad_name in section_ad_names:
             entity_map.append([597, get_id(ad_name)])
+        for ruby_name in ruby_names:
+            entity_map.append([756, get_id(ruby_name)])
         if cover_resource_name:
             entity_map.append([164, get_id(cover_resource_name)])
             entity_map.append([417, get_id(cover_location_name)])
@@ -3502,6 +3606,8 @@ class NativeKFXGenerator:
 
         if self._wrote_zoom_table:
             self._declare_table_viewer()
+        if ruby_names:
+            self._declare_ruby()
 
         # 16. Build $ion_symbol_table fragment (REQUIRED for Kindle)
         # Must be added last so all symbols used by other fragments are registered
@@ -3564,6 +3670,8 @@ class NativeKFXGenerator:
     #     needs more positions should investigate Kindle's actual limit
     #     on a real device, not assume one based on the constants.
     CONTENT_POS_BASE = 1000  # Position ID base for $259 entries
+    #: Every reading's style (#236).
+    RUBY_STYLE_NAME = "s0_rt"
     CONTENT_POS_STEP = 2  # Position ID step for $259 entries
     SECTION_POS_BASE = 10000  # Position ID base for $260 sections (v5.2.0 known-good)
     SECTION_POS_STEP = 2  # Position ID step for $260 sections
@@ -4158,6 +4266,7 @@ class NativeKFXGenerator:
             carried_anchor_keys = []
             title = chapter["title"]
             toc_links = chapter.get("toc_links")
+            title, ruby_title_spans = _ruby_heading_title(chapter.get("blocks"), title)
 
             # Decide whether to emit the title as a heading text chunk.
             # Skip it when:
@@ -4196,6 +4305,10 @@ class NativeKFXGenerator:
                 # First chunk: chapter title (heading)
                 heading_chunk_indices.add(len(all_chunks))
                 heading_chunk = {"type": "text", "text": title}
+                if ruby_title_spans:
+                    # Its readings, even when the chapter is the heading
+                    # alone and no block is left to cut it from.
+                    heading_chunk["spans"] = ruby_title_spans
                 all_chunks.append(heading_chunk)
 
             if toc_links:
@@ -4460,6 +4573,20 @@ class NativeKFXGenerator:
                     continue  # ends a container; takes no position (#219)
                 chunk_positions[chunk_idx] = content_pos_id
                 content_pos_id += self.CONTENT_POS_STEP
+
+        # Each ruby's reading is an entry with an id of its own, which takes
+        # no position: Kindle Previewer leaves readings out of the position
+        # maps (#236). Their ids follow the content's, below the sections'.
+        ruby_eids = {}
+        for chunk_idx, chunk in enumerate(all_chunks):
+            for _s, _length, flags in chunk.get("spans") or ():
+                ruby = ruby_of(flags)
+                if ruby and (chunk_idx, ruby[0]) not in ruby_eids:
+                    ruby_eids[chunk_idx, ruby[0]] = content_pos_id
+                    content_pos_id += self.CONTENT_POS_STEP
+        #: {chapter: [(eid, reading)]}, numbered from 1 in each chapter: Kindle
+        #: Previewer writes one ruby fragment per storyline.
+        ruby_readings = {}
 
         # Section position IDs (for $260). The base is dynamic (#30): sections
         # start strictly above the content range so content and section eids
@@ -5303,7 +5430,18 @@ class NativeKFXGenerator:
                 # link spans unstyled and lets the reader render them. (#53)
                 spans_out = []
                 blk_fs = _block_font_size(ch_idx, chunk)
+                # A ruby's event covers its whole base, which may be several
+                # runs; its reading is an entry in the book's ruby fragment
+                # (#236). {serial: [start, end, reading]}, in reading order.
+                rubies = {}
                 for s, length, flags in chunk_spans:
+                    ruby = ruby_of(flags)
+                    if ruby:
+                        rubies.setdefault(ruby[0], [s, s, ruby[1]])[1] = s + length
+                for s, length, flags in chunk_spans:
+                    flags = without_ruby(flags)
+                    if not flags:
+                        continue
                     if drop and s + length <= drop[1]:
                         # The Kindle sizes a drop cap to its lines: Previewer
                         # gives the initial no size of its own (#240).
@@ -5356,6 +5494,22 @@ class NativeKFXGenerator:
                         else None
                     )
                     spans_out.append((s, length, style, anchor))
+                for serial, (r_start, r_end, reading) in rubies.items():
+                    readings = ruby_readings.setdefault(ch_idx, [])
+                    readings.append((ruby_eids[chunk_idx, serial], reading))
+                    ruby = (f"ruby{ch_idx}", len(readings))
+                    at = next(
+                        (i for i, sp in enumerate(spans_out) if sp[0] >= r_start),
+                        len(spans_out),
+                    )
+                    span = spans_out[at] if at < len(spans_out) else None
+                    base = (r_start, r_end - r_start)
+                    if span and span[:2] == base:
+                        # Emphasis or a link over the whole base goes on the
+                        # ruby's event, as Previewer writes them.
+                        spans_out[at] = (*span, ruby)
+                    else:
+                        spans_out.insert(at, (*base, None, None, ruby))
                 entry_emphasis_spans.append(spans_out)
 
             frag_259 = self.build_fragment_259(
@@ -5417,7 +5571,15 @@ class NativeKFXGenerator:
             story_names = [n for n in story_names if n not in unused]
             extra_style_names[:] = [n for n in extra_style_names if n not in unused]
 
+        if ruby_readings:
+            # Built after the pruning, which looks only in the storylines.
+            self.fragments.append(self.build_ruby_style_157(self.RUBY_STYLE_NAME))
+            extra_style_names.append(self.RUBY_STYLE_NAME)
+        for ch_idx, readings in ruby_readings.items():
+            self.fragments.append(self.build_fragment_756(f"ruby{ch_idx}", readings))
+
         return {
+            "ruby_names": [f"ruby{ch_idx}" for ch_idx in ruby_readings],
             "story_names": story_names,
             "storyline_names": storyline_names,
             "content_names": content_names,
