@@ -339,3 +339,108 @@ def test_a_book_of_display_equations_declares_no_offsets(tmp_path):
     assert "kfxgen.pidMapWithOffset" not in [str(c["$492"]) for c in val(caps)]
     (features,) = by_type(frags, "$585")
     assert "yj_mathml" in [str(f["$492"]) for f in val(features)["$590"]]
+
+
+def _lines(frags):
+    """Each storyline paragraph as it reads, a drawn equation as [EQ]."""
+    texts = {str(f.fid): list(val(f)["$146"]) for f in by_type(frags, "$145")}
+    out = []
+    for e in _entries(frags):
+        if e.get("$145"):
+            ref = e["$145"]
+            out.append(str(texts[str(ref["name"])][ref["$403"]]))
+        elif str(e.get("$159")) == "$269" and isinstance(e.get("$146"), list):
+            out.append(
+                "".join(str(x) if isinstance(x, str) else "[EQ]" for x in e["$146"])
+            )
+    return out
+
+
+FRAC = "<mfrac><mi>a</mi><mi>b</mi></mfrac><mo>=</mo><mn>1</mn>"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("alttext", "label"),
+    [
+        ("", "The ab=1 rule"),
+        ("a over b equals 1", "The a over b equals 1 rule"),
+        (r"\frac{a}{b}=1", r"The \frac{a}{b}=1 rule"),
+        ("", "The a/b=1 rule"),
+        ("a over b equals 1", "The a/b=1 rule"),
+    ],
+)
+def test_a_drawn_heading_prints_once_under_any_label_for_it(tmp_path, alttext, label):
+    """The book's heading prints once with its drawing, as on Kindle
+    Previewer's page, whichever way the label writes the equation (#404)."""
+    alt = f' alttext="{alttext}"' if alttext else ""
+    body = f"<h1>The <math {M}{alt}>{FRAC}</math> rule</h1><p>Body.</p>"
+    frags = _book(tmp_path, [{"title": label, "text": "x", "blocks": _blocks(body)}])
+    assert _lines(frags) == ["The [EQ] rule", "Body."]
+
+
+@pytest.mark.unit
+def test_a_drawn_heading_split_over_two_blocks_prints_once(tmp_path):
+    body = (
+        f"<h1>The <math {M}><mfrac><mi>a</mi><mi>b</mi></mfrac></math></h1>"
+        "<h1>rule</h1><p>Body.</p>"
+    )
+    frags = _book(
+        tmp_path, [{"title": "The ab rule", "text": "x", "blocks": _blocks(body)}]
+    )
+    assert _lines(frags) == ["The [EQ] rule", "Body."]
+
+
+@pytest.mark.unit
+def test_a_different_label_still_prints_above_a_drawn_heading(tmp_path):
+    body = f"<h1>The <math {M}>{FRAC}</math> rule</h1><p>Body.</p>"
+    frags = _book(
+        tmp_path, [{"title": "Another label", "text": "x", "blocks": _blocks(body)}]
+    )
+    assert _lines(frags) == ["Another label", "The [EQ] rule", "Body."]
+
+
+@pytest.mark.unit
+def test_a_label_mixes_alttext_and_text_as_its_equations_have_them(tmp_path):
+    """One equation has `alttext` and one doesn't: the label writes each as
+    it can (#404 mutations)."""
+    body = (
+        f'<h1>Both <math {M} alttext="r squared"><msup><mi>r</mi><mn>2</mn></msup>'
+        f"</math> and <math {M}><mfrac><mi>a</mi><mi>b</mi></mfrac></math></h1>"
+        "<p>Body.</p>"
+    )
+    frags = _book(
+        tmp_path,
+        [{"title": "Both r squared and a/b", "text": "x", "blocks": _blocks(body)}],
+    )
+    assert _lines(frags) == ["Both [EQ] and [EQ]", "Body."]
+
+
+@pytest.mark.unit
+def test_an_equation_in_a_split_headings_second_block_stays_in_place(tmp_path):
+    """The second block's runs move along by the first's length (#404
+    mutations)."""
+    body = f"<h1>The rule</h1><h1>for <math {M}><mi>x</mi></math></h1><p>Body.</p>"
+    frags = _book(
+        tmp_path,
+        [{"title": "The rule for x", "text": "x", "blocks": _blocks(body)}],
+    )
+    assert _lines(frags) == ["The rule for [EQ]", "Body."]
+
+
+@pytest.mark.unit
+def test_a_heading_without_maths_still_prints_as_its_label(tmp_path):
+    """Only a heading holding an equation prints as the book writes it: one
+    of plain text keeps printing as its label, without its line breaks (54
+    of the Gutenberg 90 would change otherwise; #404 mutations)."""
+    frags = _book(
+        tmp_path,
+        [
+            {
+                "title": "Part One",
+                "text": "x",
+                "blocks": _blocks("<h1>Part<br/>One</h1><p>Body.</p>"),
+            }
+        ],
+    )
+    assert _lines(frags) == ["Part One", "Body."]
