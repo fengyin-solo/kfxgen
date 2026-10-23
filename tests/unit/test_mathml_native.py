@@ -444,3 +444,68 @@ def test_a_heading_without_maths_still_prints_as_its_label(tmp_path):
         ],
     )
     assert _lines(frags) == ["Part One", "Body."]
+
+
+RUBY_MATHS = (
+    f"<h1><ruby>漢<rt>kan</rt></ruby>字 <math {M}><mi>x</mi></math></h1><p>Body.</p>"
+)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "label", ["漢字 x", "漢(kan)字 x", "漢（kan）字 x", "漢kan字 x"]
+)
+def test_a_heading_with_ruby_and_a_drawn_equation_prints_once(tmp_path, label):
+    """A label giving the ruby's base alone, its reading in parentheses or
+    run in, as `_ruby_heading_title` takes them: the heading prints once,
+    with its reading and its drawing, as on Kindle Previewer's page (#410)."""
+    frags = _book(
+        tmp_path, [{"title": label, "text": "x", "blocks": _blocks(RUBY_MATHS)}]
+    )
+    assert _lines(frags) == ["漢字 [EQ]", "Body."]
+    readings = [str(r["$145"]) for f in by_type(frags, "$756") for r in val(f)["$146"]]
+    assert readings == ["kan"]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("ruby", "label"),
+    [
+        ("<ruby>漢<rp>(</rp><rt>kan</rt><rp>)</rp></ruby>字", "漢字 x"),
+        ("<ruby>漢<rt>kan</rt></ruby><ruby>字<rt></rt></ruby>", "漢(kan)字 x"),
+    ],
+)
+def test_rp_fallbacks_and_an_empty_reading_are_not_in_the_label(tmp_path, ruby, label):
+    """<rp> is the fallback for readers without ruby and an empty <rt> has
+    no reading: neither is written into a label (#410 mutations)."""
+    body = f"<h1>{ruby} <math {M}><mi>x</mi></math></h1><p>Body.</p>"
+    frags = _book(tmp_path, [{"title": label, "text": "x", "blocks": _blocks(body)}])
+    assert _lines(frags) == ["漢字 [EQ]", "Body."]
+
+
+@pytest.mark.unit
+def test_a_split_heading_matches_under_its_alttext_label(tmp_path):
+    """A block without an equation is read the same way in every label form
+    (#410 mutations)."""
+    body = (
+        f'<h1>The <math {M} alttext="a over b"><mfrac><mi>a</mi><mi>b</mi></mfrac>'
+        "</math></h1><h1>rule</h1><p>Body.</p>"
+    )
+    frags = _book(
+        tmp_path, [{"title": "The a over b rule", "text": "x", "blocks": _blocks(body)}]
+    )
+    assert _lines(frags) == ["The [EQ] rule", "Body."]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("rp", [("《", "》"), ("【", "】")])
+def test_a_label_of_the_source_text_keeps_rp_brackets(tmp_path, rp):
+    """A label written from the heading's source text reads its <rp> as they
+    stand, whatever brackets they hold (#410 QA: 《》 printed twice)."""
+    body = (
+        f"<h1><ruby>漢<rp>{rp[0]}</rp><rt>kan</rt><rp>{rp[1]}</rp></ruby>字 "
+        f"<math {M}><mi>x</mi></math></h1><p>Body.</p>"
+    )
+    label = f"漢{rp[0]}kan{rp[1]}字 x"
+    frags = _book(tmp_path, [{"title": label, "text": "x", "blocks": _blocks(body)}])
+    assert _lines(frags) == ["漢字 [EQ]", "Body."]
