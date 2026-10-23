@@ -3341,6 +3341,40 @@ def test_790_goes_on_the_first_leaf_not_a_container(tmp_path):
     assert len(carriers) == 1 and str(carriers[0]["$159"]) == "$269"
 
 
+@pytest.mark.parametrize("first", ["picture", "rule"])
+@pytest.mark.unit
+def test_790_goes_only_on_a_leading_picture_or_rule(tmp_path, first):
+    # #282: the text after it gets none. An empty paragraph before a rule
+    # keeps the rule at the edge until the empty block is dropped (#430 QA).
+    from kfxgen.converter import _make_img_token
+    from tests._helpers import jpeg_of
+
+    if first == "picture":
+        lead = [_para(_make_img_token("p.jpg", "", None))]
+    else:
+        lead = [_para(""), _rule()]
+    out = tmp_path / "t.kfx"
+    NativeKFXGenerator().generate_full_book(
+        "T",
+        "A",
+        [
+            {
+                "title": "Chapter",
+                "text": "x",
+                "_omit_title_heading": True,
+                "blocks": [*lead, _para("Body.")],
+            }
+        ],
+        images={"p.jpg": jpeg_of(40, 30)},
+        output_path=str(out),
+    )
+    story = [f for f in load_fragments(out) if str(f.ftype) == "$259"][-1]
+    carriers = [e for e in iter_entries(val(story)["$146"]) if "$790" in e]
+    assert [str(e["$159"]) for e in carriers] == [
+        "$271" if first == "picture" else "$596"
+    ]
+
+
 @pytest.mark.unit
 def test_header_colspan_rowspan_reach_the_cell_style(tmp_path):
     block = _table_block([["H"], ["a"]])
