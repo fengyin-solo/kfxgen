@@ -1,5 +1,5 @@
-"""An <img> of an SVG file becomes a PNG picture at the SVG's own size,
-through calibre (#438).
+"""An <img> of an SVG file becomes a PNG picture drawn at twice the SVG's
+own size and shown at its own size, through calibre (#438, #440).
 
 kfxgen writes only JPEG and PNG resources, and calibre hands an SVG file
 over parsed, not as bytes, so every such picture was dropped without a
@@ -38,12 +38,16 @@ SVGS = {
     f"{DRAWING}</svg>",
     "viewbox.svg": '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 300 150">'
     f"{DRAWING}</svg>",
+    "cell.svg": '<svg xmlns="http://www.w3.org/2000/svg" width="100" height="50">'
+    f"{DRAWING}</svg>",
 }
 XHTML = (
     '<?xml version="1.0" encoding="utf-8"?><html xmlns="http://www.w3.org/1999/xhtml">'
     "<head><title>c</title></head><body><h1>Chapter One</h1><p>Before.</p>"
     '<p><img src="attrs.svg" alt="sized"/></p><p>Middle.</p>'
-    '<p><img src="viewbox.svg" alt="viewbox"/></p><p>After.</p></body></html>'
+    '<p><img src="viewbox.svg" alt="viewbox"/></p><p>After.</p>'
+    '<table><tr><td><img src="cell.svg" alt="cell"/></td><td>Cell text.</td></tr>'
+    "</table></body></html>"
 )
 
 
@@ -98,11 +102,19 @@ def book(calibre):  # noqa: F811
         str(f.fid): (int(val(f)["$422"]), int(val(f)["$423"]))
         for f in by_type(frags, "$164")
     }
+    styles = {str(f.fid): val(f) for f in by_type(frags, "$157")}
+
+    def width(e):
+        if "$157" not in e:
+            return None
+        w = {str(k): v for k, v in styles[str(e["$157"])].items()}["$56"]
+        return str(w["$307"]) + ("%" if str(w["$306"]) == "$314" else str(w["$306"]))
+
     order = []
     for st in by_type(frags, "$259"):
         for e in iter_entries(val(st)["$146"]):
             if str(e.get("$159")) == "$271":
-                order.append(dims[str(e["$175"])])
+                order.append((*dims[str(e["$175"])], width(e)))
             elif e.get("$145"):
                 order.append(str(content[str(e["$145"]["name"])][e["$145"]["$403"]]))
     return order, version
@@ -111,7 +123,7 @@ def book(calibre):  # noqa: F811
 def test_each_svg_picture_is_written_where_it_was(book):
     order, version = book
     pictures = [x for x in order if isinstance(x, tuple)]
-    assert len(pictures) == 2, f"calibre {version}: {order}"
+    assert len(pictures) == 3, f"calibre {version}: {order}"
     i = order.index("Before.")
     assert order[i : i + 5] == [
         "Before.",
@@ -122,7 +134,20 @@ def test_each_svg_picture_is_written_where_it_was(book):
     ]
 
 
-def test_each_svg_picture_has_the_svgs_own_size(book):
+def test_each_svg_picture_is_drawn_at_twice_its_size_and_shown_at_its_own(book):
+    """Pixels: twice 200x100 and 300x150. Page width: the SVG's own width
+    against the 496 px column, as a PNG of the SVG's size would get."""
     order, version = book
     pictures = [x for x in order if isinstance(x, tuple)]
-    assert pictures == [(200, 100), (300, 150)], f"calibre {version}: {order}"
+    assert pictures[:2] == [(400, 200, "40.323%"), (600, 300, "60.484%")], (
+        f"calibre {version}: {order}"
+    )
+
+
+def test_an_svg_picture_in_a_table_cell_is_drawn_at_its_own_size(book):
+    """A cell's picture has no style, as Previewer writes it (#262), so its
+    pixels are its size: at 2x the box was twice as big on the Paperwhite
+    (#441 device check)."""
+    order, version = book
+    i = order.index("Cell text.")
+    assert order[i - 1] == (100, 50, None), f"calibre {version}: {order}"

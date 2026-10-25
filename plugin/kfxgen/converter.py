@@ -1885,6 +1885,27 @@ def _is_notes_table(table, base_href, link_targets):
     return linked >= _NOTES_TABLE_LINKED_SHARE * len(rows)
 
 
+def _pictures_in_table_cells(oeb_book):
+    """The manifest href of every `<img>` inside a `<td>` or `<th>`, spelled
+    as `_resolve_img_src` spells a picture's token (#441 device check)."""
+    found = set()
+    for item in oeb_book.spine:
+        try:
+            data = item.data
+        except Exception:
+            continue
+        if data is None or not hasattr(data, "iter"):
+            continue
+        base = getattr(item, "href", "") or ""
+        for cell in data.iter():
+            if not (isinstance(cell.tag, str) and _local_tag(cell.tag) in ("td", "th")):
+                continue
+            for img in cell.iter():
+                if isinstance(img.tag, str) and _local_tag(img.tag) == "img":
+                    found.add(_resolve_img_src(base, img.get("src", "") or ""))
+    return found
+
+
 def _book_link_targets(oeb_book):
     """Every "<file>#<id>" key an in-book link in the spine resolves to (#268)."""
     targets = set()
@@ -5927,7 +5948,9 @@ def _extract_toc_with_hrefs(oeb_book, log):
     return toc_entries
 
 
-def extract_images_from_oeb(oeb_book, log, exclude_hrefs=None):
+def extract_images_from_oeb(
+    oeb_book, log, exclude_hrefs=None, display_dims=None, own_size=()
+):
     """
     Walk OEB manifest for image/* items and return their raw bytes.
 
@@ -5939,6 +5962,11 @@ def extract_images_from_oeb(oeb_book, log, exclude_hrefs=None):
         oeb_book: Calibre OEB book object
         log: Calibre logger
         exclude_hrefs: Optional iterable of normalized hrefs to skip
+        display_dims: Optional dict, filled with {href: (width, height)} for
+            each SVG drawn at twice its size: the size to show it at (#440)
+        own_size: hrefs of SVGs to draw at their own size: those shown in a
+            table cell, where a picture has no style and its pixels are its
+            size (#441 device check)
 
     Returns:
         dict: { href: bytes } for every image manifest item that's not excluded
@@ -5961,14 +5989,17 @@ def extract_images_from_oeb(oeb_book, log, exclude_hrefs=None):
                 # calibre hands an SVG over parsed, not as bytes, so the
                 # check below dropped every one without a word (#438).
                 raw = getattr(item, "bytes_representation", None)
-                png = svg_to_png(raw, log) if raw else None
-                if png is None:
+                scale = 1 if {href, unquote(href)} & set(own_size) else 2
+                drawn = svg_to_png(raw, log, scale) if raw else None
+                if drawn is None:
                     skipped_unsupported += 1
                     log.warn(f"  Skipping image {href!r}: SVG not rasterised")
                     continue
                 log.info(f"  Rasterised SVG to PNG: {href!r}")
                 converted_svgs += 1
-                images[href] = png
+                images[href], own = drawn
+                if own and display_dims is not None:
+                    display_dims[href] = own
                 continue
             if not isinstance(data, (bytes, bytearray)) or len(data) <= 100:
                 continue
@@ -6216,8 +6247,13 @@ def convert_oeb_to_kfx(oeb_book, output_path, opts, log):
     # emission with the new dedicated image style. Diagnostic build only
     # — do not merge until Kindle device-test confirms images render.
     log.info("Extracting body images... (#4 image-rendering investigation)")
+    display_dims = {}
     images = extract_images_from_oeb(
-        oeb_book, log, exclude_hrefs=[cover_href] if cover_href else []
+        oeb_book,
+        log,
+        exclude_hrefs=[cover_href] if cover_href else [],
+        display_dims=display_dims,
+        own_size=_pictures_in_table_cells(oeb_book),
     )
 
     # Optimize over-size images unless the user opted to embed originals (#11).
@@ -6256,6 +6292,7 @@ def convert_oeb_to_kfx(oeb_book, output_path, opts, log):
         output_path=output_path,
         cover_image=cover_image,
         images=images,  # ISSUE-4 INVESTIGATION (image rendering)
+        display_dims=display_dims,
         language=metadata["language"],
         publisher=metadata["publisher"],
         issue_date=metadata.get("issue_date"),
