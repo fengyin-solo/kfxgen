@@ -2128,7 +2128,9 @@ def _in_running_text(marker):
 def _note_pair_ids(oeb_book):
     """{file: ids} of notes and their markers, found by the links between
     them (#225): a marker carrying id R links to T, and a link in T's file
-    links back to R. Then T is a note and R its marker.
+    links back to R. Then T is a note and R its marker. A target a link
+    marked `epub:type="noteref"` (or `role="doc-noteref"`) names is a note
+    too, back-link or not (#482).
 
     This is for a TOC calibre built from the book's links, which lists every
     marker and back-link as an entry: as chapters they split the notes and
@@ -2143,6 +2145,7 @@ def _note_pair_ids(oeb_book):
     so nothing in, on or around a heading counts. Detection never reads a
     label: chapters titled "1", "2", "3" are common."""
     links = []  # (file of the link, target key, keys of the ids it carries)
+    noterefs = set()  # keys a link marked as a noteref names (#482)
     back = {}  # file -> keys its links point at
     heading = set()  # keys of ids in, on or holding a heading
     for item in oeb_book.spine:
@@ -2168,6 +2171,8 @@ def _note_pair_ids(oeb_book):
             target = _resolve_link_target(elem.get("href"), base)
             if not target or "#" not in target:
                 continue
+            if "noteref" in _epub_types(elem) or elem.get("role") == "doc-noteref":
+                noterefs.add(target)
             if not in_heading:
                 back.setdefault(doc, set()).add(target)
             carriers = list(_own_anchor_ids(elem))
@@ -2186,6 +2191,10 @@ def _note_pair_ids(oeb_book):
                 links.append((doc, target, [f"{doc}#{aid}" for aid in carriers]))
 
     found = {}
+    # What a noteref names is a note, though nothing else marks it (#482).
+    for target in noterefs - heading:
+        file, _, aid = target.partition("#")
+        found.setdefault(file, set()).add(aid)
     for doc, target, carriers in links:
         if target in heading:
             continue
