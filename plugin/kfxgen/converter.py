@@ -244,6 +244,50 @@ def _css_size_px(value, inherited, root_px):
     return inherited
 
 
+def _q_css(stylizer, q):
+    """A <q>'s `quotes`, and its ::before and ::after `content`, as calibre's
+    Stylizer has them: what Kindle Previewer prints in place of the
+    language's marks (#503 QA). `quotes` inherits: the nearest element
+    declaring it, up to one whose lang differs from its parent's, where a
+    browser's own sheet sets that language's marks."""
+    st = stylizer.style(q)
+    pseudo = getattr(st, "pseudo_classes", None)
+    rules = pseudo(()) if pseudo is not None else {}
+    quotes = None
+    for a in (q, *q.iterancestors()):
+        value = (stylizer.style(a).get("quotes") or "").strip()
+        if value and value.lower() != "inherit":
+            quotes = value
+            break
+        if _starts_a_language(a):
+            break
+    return {
+        "quotes": quotes,
+        "before": dict(rules.get("before") or {}).get("content"),
+        "after": dict(rules.get("after") or {}).get("content"),
+    }
+
+
+def _lang_of(elem):
+    """The nearest `lang` at or above `elem`, or None. Kindle Previewer
+    4.0.3 reads `lang` only, never `xml:lang`, for a <q>'s marks (#503 QA)."""
+    for a in (elem, *elem.iterancestors()):
+        if a.get("lang") is not None:
+            return a.get("lang")
+    return None
+
+
+def _starts_a_language(elem):
+    """Whether `elem` sets a lang its parent doesn't have: there a browser's
+    own sheet gives that language's quotation marks (#503 QA). Compared as
+    written: Previewer takes lang="EN" under "en" as a change."""
+    own = elem.get("lang")
+    if own is None:
+        return False
+    parent = elem.getparent()
+    return own != (_lang_of(parent) if parent is not None else None)
+
+
 def _first_letter_css(stylizer, elem, cache):
     """The paragraph's `::first-letter` CSS, its font size in CSS px, or None.
     calibre keeps the rule on the paragraph's style for KFX; it makes a span
@@ -333,6 +377,10 @@ def _build_style_resolver(oeb_book, item, log, stylizer_factory=None):
                         _first_letter_css(stylizer, elem, sizes)
                         if _local_tag(elem.tag) == "p"
                         else None
+                    ),
+                    # A <q>'s marks as the book styles them (#503 QA).
+                    "q-css": (
+                        _q_css(stylizer, elem) if _local_tag(elem.tag) == "q" else None
                     ),
                     "float": st.get("float"),
                     # Declared: it doesn't inherit (#381).
@@ -1089,6 +1137,123 @@ def _draws_as_block(local, css):
     return display in _BLOCK_DISPLAYS
 
 
+#: The quotation marks a <q> is printed with, by its lang as a whole tag:
+#: (open, close, nested open, nested close). Measured from Kindle Previewer
+#: 4.0.3's output for 4,422 tags, 66 languages with and without 75 regions
+#: and scripts (#469, #503 QA); a tag not here, en-US and de-AT among them,
+#: gets the plain pair Previewer writes for no lang at all.
+_Q_MARKS = {
+    "af": "\u201c\u201d\u2018\u2019",
+    "ar": "\u201d\u201c\u2019\u2018",
+    "az-cyrl": "\u00ab\u00bb\u2039\u203a",
+    "bg": "\u201e\u201c\u201a\u2018",
+    "bn": "\u201c\u201d\u2018\u2019",
+    "br": "\u00ab\u00bb\u2039\u203a",
+    "bs-cyrl": "\u201e\u201c\u201a\u2018",
+    "ca": "\u201c\u201d\u00ab\u00bb",
+    "cs": "\u201e\u201c\u201a\u2018",
+    "da": "\u201c\u201d\u2018\u2019",
+    "de": "\u201e\u201c\u201a\u2018",
+    "de-ch": "\u00ab\u00bb\u2039\u203a",
+    "el": "\u00ab\u00bb\u201c\u201d",
+    "en": "\u201c\u201d\u2018\u2019",
+    "en-gb": "\u201c\u201d\u2018\u2019",
+    "es": "\u201c\u201d\u00ab\u00bb",
+    "et": "\u201e\u201c\u201a\u2018",
+    "eu": "\u201c\u201d\u00ab\u00bb",
+    "fa": "\u00ab\u00bb\u2039\u203a",
+    "fi": "\u201d\u201d\u2019\u2019",
+    "fr": "\u00ab\u00bb\u00ab\u00bb",
+    "fr-ca": "\u00ab\u00bb\u2039\u203a",
+    "fr-ch": "\u00ab\u00bb\u2039\u203a",
+    "hi": "\u201c\u201d\u2018\u2019",
+    "hr": "\u201e\u201c\u201a\u2018",
+    "hu": "\u201e\u201d\u00bb\u00ab",
+    "id": "\u201c\u201d\u2018\u2019",
+    "it": "\u00ab\u00bb\u201c\u201d",
+    "ja": "\u300c\u300d\u300e\u300f",
+    "ko": "\u201c\u201d\u2018\u2019",
+    "lt": "\u201e\u201c\u201e\u201c",
+    "lv": "\u201c\u201d\u2018\u2019",
+    "mk": "\u201e\u201c\u201a\u2018",
+    "ms": "\u201c\u201d\u2018\u2019",
+    "nb": "\u00ab\u00bb\u2018\u2019",
+    "nl": "\u201c\u201d\u2018\u2019",
+    "nn": "\u00ab\u00bb\u2018\u2019",
+    "pl": "\u201e\u201d\u00ab\u00bb",
+    "pt": "\u201c\u201d\u2018\u2019",
+    "pt-pt": "\u00ab\u00bb\u201c\u201d",
+    "ro": "\u201e\u201d\u00ab\u00bb",
+    "ru": "\u00ab\u00bb\u201e\u201c",
+    "sk": "\u201e\u201c\u201a\u2018",
+    "sl": "\u201e\u201c\u201a\u2018",
+    "sq": "\u201e\u201c\u201a\u2018",
+    "sr": "\u201e\u201c\u201a\u2018",
+    "sr-latn": "\u201e\u201c\u201a\u2018",
+    "sv": "\u201d\u201d\u2019\u2019",
+    "sw": "\u201c\u201d\u2018\u2019",
+    "ta": "\u201c\u201d\u2018\u2019",
+    "te": "\u201c\u201d\u2018\u2019",
+    "th": "\u201c\u201d\u2018\u2019",
+    "tr": "\u201c\u201d\u2018\u2019",
+    "uk": "\u00ab\u00bb\u201e\u201c",
+    "ur": "\u201d\u201c\u2019\u2018",
+    "vi": "\u201c\u201d\u2018\u2019",
+    "zh": "\u201c\u201d\u2018\u2019",
+    "zh-hant": "\u300c\u300d\u300e\u300f",
+    "zu": "\u201c\u201d\u2018\u2019",
+}
+_Q_PLAIN = "\"\"''"
+
+
+_CSS_STRING_RE = re.compile(r'"((?:[^"\\]|\\.)*)"|\'((?:[^\'\\]|\\.)*)\'')
+
+
+def _css_strings(value):
+    """The strings in a CSS value, escapes read ("\\201C" is a quotation
+    mark)."""
+
+    def unescape(text):
+        text = re.sub(
+            r"\\([0-9a-fA-F]{1,6})\s?", lambda m: chr(int(m.group(1), 16)), text
+        )
+        return re.sub(r"\\(.)", r"\1", text)
+
+    return [unescape(a or b) for a, b in _CSS_STRING_RE.findall(value or "")]
+
+
+def _q_marks(q, css=None):
+    """(open, close) for a <q>, as Kindle Previewer 4.0.3 prints them: its
+    ::before and ::after content when the book sets one, else its `quotes`
+    (none, or pairs by depth), else its nearest lang's pair (an empty lang is
+    unknown, so plain); the nested pair for a <q> inside another (#469,
+    #503 QA)."""
+    css = css or {}
+    depth = sum(1 for a in q.iterancestors() if _local_tag(a.tag) == "q")
+    lang = _lang_of(q) or ""
+    marks = _Q_MARKS.get(lang.lower(), _Q_PLAIN)
+    pair = (marks[2], marks[3]) if depth else (marks[0], marks[1])
+    quotes = (css.get("quotes") or "").strip().lower()
+    if quotes == "none":
+        pair = ("", "")
+    elif strings := _css_strings(css.get("quotes")):
+        pairs = list(zip(strings[0::2], strings[1::2]))
+        if pairs:
+            pair = pairs[min(depth, len(pairs) - 1)]
+
+    def content(value, i):
+        value = (value or "").strip()
+        if value in ("", "normal"):
+            return pair[i]
+        if value == "none":
+            return ""
+        if value in ("open-quote", "close-quote"):
+            return pair[i]
+        return "".join(_css_strings(value))
+
+    return content(css.get("before"), 0), content(css.get("after"), 1)
+
+
 def _walk_inline(
     elem,
     flags=frozenset(),
@@ -1304,6 +1469,15 @@ def _walk_inline(
         if line:
             parts.append(("", frozenset({LINE_START})))
         return parts
+    quote = (
+        _q_marks(
+            elem, (style_resolver(elem) or {}).get("q-css") if style_resolver else None
+        )
+        if local == "q"
+        else None
+    )
+    if quote:
+        parts.append((quote[0], cur))
     text = elem.text
     if text and local == "pre":
         # HTML ignores a newline straight after <pre>; the XML parser keeps it.
@@ -1379,6 +1553,8 @@ def _walk_inline(
             # inside an <a> lost the link, leaving entries half-underlined and
             # half-dead. (#59)
             parts.append((child.tail, cur))
+    if quote:
+        parts.append((quote[1], cur))
 
     # Close a cell with a boundary so the next one cannot fuse onto it. Emitted
     # unconditionally rather than only when the source lacks whitespace —
