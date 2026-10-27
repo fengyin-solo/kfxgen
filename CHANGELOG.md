@@ -1,5 +1,119 @@
 # Changelog
 
+## 5.19.0 — Matching Kindle Previewer, checked on a Kindle
+
+This release comes out of an audit of the code that had never had a QA
+review (#452). Each part was compared with what Kindle Previewer 4.0.3,
+Amazon's own converter, writes for the same book. Every difference found
+became an issue, and each fix had a reviewed pull request. Each fix was
+converted through real calibre and compared with Previewer's output; most
+were also checked against the Gutenberg 90 and a sample of library books
+before and after.
+
+The fixes were then gathered into three test books (navigation, text
+styling, and pictures and tables) and checked on a Kindle Paperwhite
+(firmware 5.19.2) and a Kindle Voyage (5.13.6). Everything passed except
+one known gap, listed at the end. Nothing was checked on the Oasis.
+
+### What readers will notice
+
+**Finding your way around the book**
+- The contents pane lists chapters in the book's own order (#484).
+- Chapter skipping stops at the book's real headings, as in Previewer's
+  books, including the heading of a Contents page. A book whose headings
+  are styled paragraphs gets no heading list, as in Previewer's books (#461, #575,
+  #580).
+- A table of contents whose file names differ from the book's in capital
+  letters no longer loses chapters, and pages after a Contents page that
+  the table of contents doesn't list are kept (#549, #556).
+- Two table-of-contents entries that point at the same place both work.
+  Entries with an empty label are kept as Previewer keeps them; the Kindle
+  doesn't show those in the pane (#459).
+- A heading set over two or three lines prints as the book wrote it,
+  each line in its own style (#552).
+- Web and email links stay links (#474). A link to the end of a paragraph
+  or into a chapter's first heading lands on the right word (#487, #491).
+
+**Pictures**
+- Pictures are sized the way Previewer 4 sizes them, and very large
+  pictures are scaled down to 1920 pixels (#467). Small and non-square
+  pictures keep their shape (#462).
+- A picture inside a line of text stays in the line, at the height and
+  vertical position the book gives it (#529, #565).
+- Pictures saved in print colours (CMYK) show their real colours (#466).
+- A picture, cover or font that can't be read is left out, instead of
+  stopping the conversion (#471).
+- The cover shows where the book's text uses it, once. A first page that
+  only repeats the cover is kept (#475, #524).
+- Words beside a picture on an untitled first page print once, not twice
+  (#525).
+
+**Tables**
+- Cell text is aligned as in Previewer: left, or right in a
+  right-to-left table (#479, #570).
+- Empty cells and a cell that spans past the table's edge are written as
+  Previewer writes them, and cell background colours show (#480, #502).
+
+**Text**
+- Line spacing, hanging indents (bibliography style) and text set to the
+  top or bottom of a line follow the book's styles (#463, #465, #485).
+- A heading kfxgen prints keeps the book's own style for it (#490).
+- Quotation marks for `<q>` follow the book's language and nesting
+  (#469, #504).
+- Fonts whose names contain commas work, and text a web browser wouldn't
+  show is left out (#487, #477).
+
+**Library and language**
+- The book's own description and every author are carried over, and no
+  publication date is invented (#454).
+- The book's language is written as a real language code (`ja`, `es`,
+  `pt`), so Japanese uses Japanese letter forms and dictionary look-up
+  picks the right language (#453).
+
+### Tech debt paid down
+
+This is work a reader won't see, but that makes kfxgen easier to trust
+and to change.
+
+- **The unreviewed code was audited (#452).** The parts of the KFX writer
+  that had never had a QA review were compared with Previewer's output,
+  and every difference found was either fixed (above) or filed.
+- **Code that could never run was removed (#457),** and so was the old
+  table-of-contents fallback for chapter skipping, which Previewer never
+  writes (#575).
+- **No more dead data in the file.**
+  - A paragraph holding a picture or an equation stored its words twice;
+    they are now stored once. That also removed an error kfxlib reported
+    in some books (#567).
+  - Each part of the book is named once in its index (#520).
+  - Optional KFX features are declared only when the book uses them (#455).
+- **Failures are easier to diagnose.** When the KFX writer fails, the log
+  now names the error and where it happened, and keeps that report even
+  if the fallback converter fails too (#472).
+- **Safer file handling.**
+  - A failed save cleans up after itself, and an overwritten book keeps its
+    file permissions (#458).
+  - The fallback that uses Kindle Previewer checks for the KFX Input plugin
+    first, allows big books more time, writes its file safely, and finds
+    Previewer 4 (#498, #513).
+- **Faster:** each picture is decoded once instead of twice (#514).
+- **Tests that catch real breakage.** Each fix's tests were checked by
+  breaking the code on purpose and confirming a test fails. Where none
+  did, a test was added (for example #563 and #569).
+- **Fewer device sessions.** Three themed test books replaced 18 separate
+  device checks.
+
+### Known differences from Previewer, still open
+- A subscript inside a superscript is drawn raised (#536). This is the one
+  device check that failed.
+- In a table cell, an `align=` attribute still wins over CSS `text-align`
+  (#570).
+- Previewer adds a page list (print page numbers) and a table-of-contents
+  landmark that kfxgen doesn't write yet (#578, #579).
+- A full-colour PNG over 1920 pixels can grow when scaled (#557).
+- Right-to-left page turning (#246) and vertical Japanese text (#247) are
+  not supported.
+
 ## 5.18.0 — Pop-up footnotes, title pages and links into front matter
 
 The changes since 5.17.0, each reviewed and converted through real calibre,
