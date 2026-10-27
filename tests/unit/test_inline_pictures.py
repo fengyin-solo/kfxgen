@@ -163,3 +163,44 @@ def test_a_picture_alone_on_its_line_is_cut_out_as_before(tmp_path):
     )
     assert not _mixed(entries)
     assert ("picture", "img_0") in entries
+
+
+def test_the_paragraph_resumes_one_character_after_each_picture(tmp_path):
+    """The position map ($265): each picture takes one offset, and the
+    paragraph's next record starts right after it, at the next character,
+    as for a drawn equation's own positions (#235)."""
+    xhtml = (
+        '<html xmlns="http://www.w3.org/1999/xhtml"><body><h1>One</h1>'
+        "<p>Two <img src='s.jpg' alt='x'/> and <img src='b.jpg' alt='y'/> here.</p>"
+        "<p>Next.</p></body></html>"
+    )
+    blocks = _conv.extract_blocks_from_html(
+        etree.fromstring(xhtml.encode()), base_href="c.xhtml"
+    )
+    out = tmp_path / "p.kfx"
+    NativeKFXGenerator().generate_full_book(
+        title="T",
+        author="A",
+        chapters=[{"title": "One", "text": "x", "blocks": blocks}],
+        images={"s.jpg": SIGN, "b.jpg": WIDE},
+        output_path=str(out),
+    )
+    frags = load_fragments(out)
+    (mixed,) = [
+        getattr(e, "value", e)
+        for st in by_type(frags, "$259")
+        for e in val(st)["$146"]
+        if getattr(e, "value", e).get("$146")
+    ]
+    pictures = [int(p["$155"]) for p in mixed["$146"] if hasattr(p, "get")]
+    records = [
+        (int(r["$184"]), int(r["$185"]), int(r.get("$143") or 0))
+        for f in by_type(frags, "$265")
+        for r in val(f)
+    ]
+    para = int(mixed["$155"])
+    start = next(o for o, p, k in records if p == para and k == 0)
+    # "Two " is 4 characters, " and " 5: pictures at 4 and 10.
+    assert [o - start for o, p, _k in records if p in pictures] == [4, 10]
+    assert (start + 5, para, 5) in records
+    assert (start + 11, para, 11) in records
