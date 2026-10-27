@@ -141,8 +141,11 @@ def test_a_picture_alone_in_its_paragraph_is_unchanged(tmp_path):
         ("style='width:2em'", ("2$308", "1.46667$308", "100$314")),
         ("style='width:100px'", ("3.75$308", "2.75$308", None)),
         ("width='50'", ("1.875$308", "1.375$308", None)),
+        # A height alone: kept, the width following the shape (QA on #564).
+        ("style='height:2em'", ("2.72727$308", "2$308", None)),
+        ("height='30'", ("1.53409$308", "1.125$308", None)),
     ],
-    ids=["percent", "em", "px", "attribute"],
+    ids=["percent", "em", "px", "attribute", "height-em", "height-attribute"],
 )
 def test_a_width_the_markup_gives_is_kept_as_previewer_converts_it(tmp_path, img, size):
     """Kindle Previewer 4.0.3 (probed): a % of its 512 px column, em as

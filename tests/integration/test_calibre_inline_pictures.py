@@ -38,6 +38,7 @@ BODY = (
     "<h2>P6 heading <img src='s.jpg' alt='x'/> with it</h2>"
     "<p>Q1 pct <img src='b.jpg' style='width:20%' alt='x'/> after.</p>"
     "<p>Q2 em <img src='b.jpg' style='width:2em' alt='x'/> after.</p>"
+    "<p>Q5 height <img src='b.jpg' style='height:1em' alt='x'/> after.</p>"
     "<div><img src='b.jpg' alt='a'/><br/>R3 caption after a break.</div>"
     "<p id='t'>Target.</p>"
 )
@@ -51,6 +52,7 @@ PREVIEWER = [
     ("mixed", ["P6 heading ", "2emx2em", " with it"], []),
     ("mixed", ["Q1 pct ", "6.4emx4.69333em", " after."], []),
     ("mixed", ["Q2 em ", "2emx1.46667em", " after."], []),
+    ("mixed", ["Q5 height ", "1.36364emx1em", " after."], []),
     ("picture", "58.594%"),
     ("text", "R3 caption after a break."),
     ("text", "Target."),

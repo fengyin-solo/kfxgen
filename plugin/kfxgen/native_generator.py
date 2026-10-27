@@ -1467,7 +1467,8 @@ class NativeKFXGenerator:
         paragraph's own em (48 px is 3em; in text at 1.5em, 2em). A width the
         markup gives is kept: a % of Previewer 4's 512 px column, em as
         written, px at 0.45pt and pt with 1em = 12pt (as #541 measured
-        margins); its height follows the picture's shape."""
+        margins); its height follows the picture's shape. A height given
+        alone is kept the same way, the width following it."""
         _kind, resource, alt, hint, font_size = item
         (eid,) = eids
         dims = {}
@@ -1480,8 +1481,8 @@ class NativeKFXGenerator:
         scale = 16 * (font_size or 1)
         w_em, h_em, fill = width / scale, height / scale, False
         m = _SIZE_HINT_RE.match(hint or "")
+        number, unit = (float(m.group(2)), m.group(3) or "px") if m else (0, "")
         if m and m.group(1) == "w":
-            number, unit = float(m.group(2)), m.group(3) or "px"
             if unit == "em":
                 w_em, fill = number, True
             elif unit == "%":
@@ -1490,6 +1491,14 @@ class NativeKFXGenerator:
                 pt = number * (0.45 if unit == "px" else 1.0)
                 w_em = pt / 12 / (font_size or 1)
             h_em = w_em * height / width
+        elif m and unit != "%":
+            # A height alone, the same rule on the other axis (QA on #564:
+            # 2em stays 2em, height="30" is 1.125em).
+            if unit == "em":
+                h_em = number
+            else:
+                h_em = number * (0.45 if unit == "px" else 1.0) / 12 / (font_size or 1)
+            w_em = h_em * width / height
         size = (f"{round(w_em, 5):g}", f"{round(h_em, 5):g}", fill)
         if size not in self._inline_picture_styles:
             name = f"s_ipic{len(self._inline_picture_styles)}"
