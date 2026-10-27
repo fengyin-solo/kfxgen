@@ -6389,7 +6389,7 @@ def _rebuild_contents_page(contents_ch, all_chapters, log):
             # it ("Navigation"), which matches nothing. (#132)
             continue
         ch_lower = _normalize_title(ch["title"])
-        if ch_lower in CONTENTS_SKIP_TITLES:
+        if ch_lower in CONTENTS_SKIP_TITLES or not ch["title"].strip():
             continue
         if ch.get("_omit_from_toc"):
             # Left out of the navigation pane (#143), so left off this page
@@ -6403,7 +6403,10 @@ def _rebuild_contents_page(contents_ch, all_chapters, log):
                 "level": ch.get("toc_level", 0),
             }
         )
-        # Places in the section the contents name, after it (#363).
+        # Places in the section the contents name, after it (#363). One with
+        # no words (#459) gets no line: an empty line had no offset of its
+        # own, and the position map listed the next one's id without one
+        # (#562).
         toc_links.extend(
             {
                 "text": sub["title"],
@@ -6412,6 +6415,7 @@ def _rebuild_contents_page(contents_ch, all_chapters, log):
                 "level": sub.get("level", 0),
             }
             for sub in ch.get("sub_entries") or ()
+            if (sub["title"] or "").strip()
         )
     # Indented by depth, counted from the shallowest entry listed: a book's
     # contents often sit under one wrapper entry (its title) that this page
