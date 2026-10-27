@@ -1011,6 +1011,37 @@ def _picture_link(at, spans):
     return None
 
 
+def _with_anchors(block, source):
+    """`block` also holding `source`'s anchors, at its start."""
+    keys = list(source.get("anchor_keys") or [])
+    return {
+        **block,
+        "anchor_keys": [*keys, *(block.get("anchor_keys") or [])],
+        "anchor_ids": [
+            *(source.get("anchor_ids") or []),
+            *(block.get("anchor_ids") or []),
+        ],
+        "anchor_offsets": {
+            **dict.fromkeys(keys, 0),
+            **(block.get("anchor_offsets") or {}),
+        },
+    }
+
+
+def _token_resource(href, image_resources, resolved_image_refs):
+    """The (resource, location) a picture token's href names, or None: its
+    exact manifest href, then its decoded form; its basename only for hrefs
+    that were never resolved (`_may_fall_back_by_basename`). A query string
+    names no different file."""
+    bare = href.split("#", 1)[0].split("?", 1)[0] if href else ""
+    resource = image_resources.get(bare)
+    if resource is None:
+        resource = image_resources.get(unquote(bare))
+    if resource is None and _may_fall_back_by_basename(bare, resolved_image_refs):
+        resource = image_resources.get(bare.rsplit("/", 1)[-1])
+    return resource
+
+
 def _may_fall_back_by_basename(href, resolved_image_refs):
     """Whether an image href that matched no key may try its bare filename.
 
@@ -3329,6 +3360,7 @@ class NativeKFXGenerator:
             return h.rsplit("/", 1)[-1]
 
         image_resources = {}
+        cover_hrefs = []  # body pictures that are the cover's (#475)
         self._image_dims = {}  # basename -> (width, height) for style picker
         self._footnote_keys = set(footnote_keys or ())
         self._popup_anchors, self._popup_positions = set(), set()
@@ -3353,6 +3385,11 @@ class NativeKFXGenerator:
             valid = []
             for href, data in sorted(images.items()):
                 if not data or len(data) <= 100:
+                    continue
+                if cover_resource_name and data == cover_image:
+                    # The cover's picture used in the text: shown there from
+                    # the cover's resource, not stored twice (#475).
+                    cover_hrefs.append(href)
                     continue
                 if data[:3] == b"\xff\xd8\xff":
                     fmt = "jpeg"
@@ -3413,6 +3450,13 @@ class NativeKFXGenerator:
                 )
             )
 
+        for href in cover_hrefs:
+            dims = (display_dims or {}).get(href) or cover_dims
+            for key in (_img_basename(href), href, unquote(href)):
+                if key not in image_resources:
+                    image_resources[key] = (cover_resource_name, cover_location_name)
+                    self._image_dims[key] = dims
+
         # Cover-in-reading-flow (#32): make the cover image visible as the
         # first reading page by registering its resource under a synthetic
         # basename and prepending a cover chapter. The cover chapter has no
@@ -3454,6 +3498,11 @@ class NativeKFXGenerator:
         # in subsequent chapters shift by +1 to account for the new chapter
         # at index 0.
         if cover_resource_name:
+            # The book's first page opening with the cover: that picture is
+            # the cover page's, not printed again under it (#475).
+            blocks = self._without_leading_cover(chapters[0], cover_resource_name)
+            if blocks is not None:
+                chapters = [{**chapters[0], "blocks": blocks}, *chapters[1:]]
             chapters = [
                 {
                     **ch,
@@ -3666,7 +3715,14 @@ class NativeKFXGenerator:
         if cover_resource_name:
             all_entity_names.append(cover_resource_name)
             all_entity_names.append(cover_location_name)
+        cover_listed = False
         for resource_name, location_name in image_resources.values():
+            if resource_name == cover_resource_name:
+                # Its aliases in the text name the same pair: listed once, as
+                # before they existed (#475).
+                if cover_listed:
+                    continue
+                cover_listed = True
             all_entity_names.append(resource_name)
             all_entity_names.append(location_name)
         # Embedded fonts (#15): register the $418 raw-font locations so the
@@ -3821,6 +3877,64 @@ class NativeKFXGenerator:
     # 1.2 keeps headings distinct but readable on small Kindle screens
     HEADING_FONT_SIZE = 1.2
 
+    def _without_leading_cover(self, chapter, cover_resource_name):
+        """`chapter`'s blocks without its first one when that block is a
+        picture of the cover alone, or None. Its anchors move to the block
+        after it, at its start, so links to the picture still land (#475). A
+        cover sharing its paragraph with text stays, as Kindle Previewer
+        4.0.3 prints it twice there (QA's c1 probe on #516). A styled box
+        (#238) is looked into: its own blocks print it."""
+        found = self._drop_leading_cover(
+            chapter.get("blocks") or [], cover_resource_name
+        )
+        if found is None:
+            return None
+        blocks, pending = found
+        if pending:
+            # Nothing after it: an empty block holds its anchors.
+            blocks = [_with_anchors({"text": "", "spans": []}, pending), *blocks]
+        return blocks
+
+    def _drop_leading_cover(self, blocks, cover_resource_name):
+        """(blocks less the leading cover picture, anchors left to place), or
+        None when the first block with text isn't that picture."""
+        blocks = list(blocks)
+        for n, block in enumerate(blocks):
+            text = (block.get("text") or "").strip()
+            if not text:
+                continue
+            is_box = block.get("type") == "box"
+            m = None if is_box else IMG_TOKEN_RE.fullmatch(text)
+            resource = m and _token_resource(
+                m.group(1), self.image_resources, self._resolved_image_refs
+            )
+            if not is_box and (not resource or resource[0] != cover_resource_name):
+                return None
+            pending = block
+            if is_box:
+                found = self._drop_leading_cover(
+                    block.get("blocks") or [], cover_resource_name
+                )
+                if found is None:
+                    return None
+                kids, inner = found
+                if kids:
+                    if inner:
+                        kids = [_with_anchors(kids[0], inner), *kids[1:]]
+                    blocks[n] = {
+                        **block,
+                        "text": "\n\n".join(k.get("text") or "" for k in kids),
+                        "blocks": kids,
+                    }
+                    return blocks, None
+                pending = _with_anchors(block, inner) if inner else block
+            del blocks[n]
+            if n < len(blocks):
+                blocks[n] = _with_anchors(blocks[n], pending)
+                return blocks, None
+            return blocks, pending
+        return None
+
     def _build_chapter_content(self, chapters):
         """
         Build content fragments for multi-chapter books.
@@ -3908,14 +4022,9 @@ class NativeKFXGenerator:
                 # Exact manifest href, then its decoded form; basename only
                 # for hrefs that were never resolved — see _img_basename
                 # helper above. A query string names no different file.
-                bare = href.split("#", 1)[0].split("?", 1)[0] if href else ""
-                resource = image_resources.get(bare)
-                if resource is None:
-                    resource = image_resources.get(unquote(bare))
-                if resource is None and _may_fall_back_by_basename(
-                    bare, self._resolved_image_refs
-                ):
-                    resource = image_resources.get(bare.rsplit("/", 1)[-1])
+                resource = _token_resource(
+                    href, image_resources, self._resolved_image_refs
+                )
                 if resource is not None:
                     chunk = {
                         "type": "image",
