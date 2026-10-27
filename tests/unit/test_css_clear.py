@@ -159,11 +159,11 @@ def test_a_cleared_paragraph_after_a_float_has_628(tmp_path, cls, symbol):
 
 @pytest.mark.unit
 def test_only_the_first_entry_of_a_cleared_block_has_628(tmp_path):
-    """A picture splits the paragraph into three entries; the ones after it
-    continue the paragraph."""
+    """A picture alone on its line splits the paragraph into three entries;
+    the ones after it continue the paragraph."""
     body = (
-        f'<p class="cb">First. <img class="w20" src="i.jpg" alt="a"/>After. {WORDS}</p>'
-        f"<p>Next. {WORDS}</p>"
+        f'<p class="cb">First.<br/><img class="w20" src="i.jpg" alt="a"/><br/>'
+        f"After. {WORDS}</p><p>Next. {WORDS}</p>"
     )
     found = [
         (t, txt.split(".")[0] if txt else None, _clear_of(s))
@@ -176,6 +176,20 @@ def test_only_the_first_entry_of_a_cleared_block_has_628(tmp_path):
         ("$269", "After", None),
         ("$269", "Next", None),
     ]
+
+
+@pytest.mark.unit
+def test_a_cleared_paragraph_with_a_picture_in_its_words_is_one_entry(tmp_path):
+    """The picture is inside the paragraph's entry (#529), which alone has
+    `$628`."""
+    body = (
+        f'<p class="cb">First. <img class="w20" src="i.jpg" alt="a"/>After. {WORDS}</p>'
+        f"<p>Next. {WORDS}</p>"
+    )
+    found = [(t, _clear_of(s)) for t, s, _txt in _entries(body, tmp_path)]
+    assert ("$269", "$421") in found
+    assert ("$271", None) in found
+    assert [c for _t, c in found].count("$421") == 1
 
 
 @pytest.mark.unit

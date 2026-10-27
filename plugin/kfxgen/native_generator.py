@@ -1094,6 +1094,10 @@ def _with_anchors(block, source):
     }
 
 
+#: A picture inside a paragraph's words, one character of its text (#529).
+INLINE_PICTURE = "\ufffc"
+
+
 def _token_resource(href, image_resources, resolved_image_refs):
     """The (resource, location) a picture token's href names, or None: its
     exact manifest href, then its decoded form; its basename only for hrefs
@@ -1520,6 +1524,75 @@ class NativeKFXGenerator:
         name, strings = groups[-1]
         strings.append(text)
         return IonStruct(IS("$4"), IS(name), IS("$403"), len(strings) - 1)
+
+    def _inline_picture_entry(self, item, eids):
+        """A picture inside a paragraph's words, as Kindle Previewer 4.0.3
+        writes it (#529): inline, its pixels / 16 in em on both axes, in the
+        paragraph's own em (48 px is 3em; in text at 1.5em, 2em). A width the
+        markup gives is kept: a % of Previewer 4's 512 px column, em as
+        written, px at 0.45pt and pt with 1em = 12pt (as #541 measured
+        margins); its height follows the picture's shape. A height given
+        alone is kept the same way, the width following it."""
+        _kind, resource, alt, hint, font_size = item
+        (eid,) = eids
+        dims = {}
+        for key, (res, _loc) in (self.image_resources or {}).items():
+            if key in (self._image_dims or {}):
+                dims.setdefault(res, self._image_dims[key])
+        width, height = dims.get(resource) or (None, None)
+        # Pixels unknown (a picture that won't decode): one em.
+        width, height = width or 16, height or 16
+        scale = 16 * (font_size or 1)
+        w_em, h_em, fill = width / scale, height / scale, False
+        m = _SIZE_HINT_RE.match(hint or "")
+        number, unit = (float(m.group(2)), m.group(3) or "px") if m else (0, "")
+        if m and m.group(1) == "w":
+            if unit == "em":
+                w_em, fill = number, True
+            elif unit == "%":
+                w_em = number / 100 * 512 / scale
+            else:
+                pt = number * (0.45 if unit == "px" else 1.0)
+                w_em = pt / 12 / (font_size or 1)
+            h_em = w_em * height / width
+        elif m and unit != "%":
+            # A height alone, the same rule on the other axis (QA on #564:
+            # 2em stays 2em, height="30" is 1.125em).
+            if unit == "em":
+                h_em = number
+            else:
+                h_em = number * (0.45 if unit == "px" else 1.0) / 12 / (font_size or 1)
+            w_em = h_em * width / height
+        size = (f"{round(w_em, 5):g}", f"{round(h_em, 5):g}", fill)
+        if size not in self._inline_picture_styles:
+            name = f"s_ipic{len(self._inline_picture_styles)}"
+            self.symtab.create_local_symbol(name)
+
+            def em(v):
+                return IonStruct(IS("$307"), IonDecimal(v), IS("$306"), IS("$308"))
+
+            value = IonStruct(IS("$56"), em(size[0]), IS("$57"), em(size[1]))
+            if fill:
+                # Never past the column, as Previewer writes an em width.
+                value[IS("$65")] = IonStruct(
+                    IS("$307"), IonDecimal("100"), IS("$306"), IS("$314")
+                )
+            value[IS("$173")] = IS(name)
+            self._inline_picture_styles[size] = (name, value)
+        return IonStruct(
+            IS("$155"),
+            eid,
+            IS("$584"),
+            alt,
+            IS("$601"),
+            IS("$283"),
+            IS("$157"),
+            IS(self._inline_picture_styles[size][0]),
+            IS("$159"),
+            IS("$271"),
+            IS("$175"),
+            IS(resource),
+        )
 
     def _math_entry(self, item, eids):
         """A drawn equation as Kindle Previewer writes it (#235): a container
@@ -2298,14 +2371,15 @@ class NativeKFXGenerator:
                 if maths:
                     # A drawn equation (#235): its container, inner container
                     # and shape take a position each, the paragraph one offset.
+                    # A picture in the words (#529): its one id, one position.
                     text, items = maths
                     pos = chunk_positions[chunk_idx]
-                    done = 0
-                    for j, (k, _item, eids) in enumerate(items):
-                        base = char_offset + k + 2 * j
+                    done = extra = 0
+                    for k, _item, eids in items:
+                        base = char_offset + k + extra
                         located.append((pos, k - done, done))
                         if k > done:
-                            # The paragraph reaches the equation here; right
+                            # The paragraph reaches the item here; right
                             # after another, where that one's resumes it.
                             entries_265_raw.append((base, pos, k))
                             math_positions.add((base, pos))
@@ -2315,11 +2389,12 @@ class NativeKFXGenerator:
                             located.append((e, 1))
                         done = k + 1
                         if done < len(text):
-                            entries_265_raw.append((base + 3, pos, done))
-                            math_positions.add((base + 3, pos))
+                            entries_265_raw.append((base + len(eids), pos, done))
+                            math_positions.add((base + len(eids), pos))
+                        extra += len(eids) - 1
                     if done < len(text):
                         located.append((pos, len(text) - done, done))
-                    char_offset += len(text) + 2 * len(items)
+                    char_offset += len(text) + extra
                     continue
                 char_offset += chunk_text_len
                 if chunk_positions[chunk_idx] is not None:
@@ -3165,7 +3240,11 @@ class NativeKFXGenerator:
                 for k, item, eids in items:
                     if text[last:k]:
                         mixed.append(text[last:k])
-                    mixed.append(self._math_entry(item, eids))
+                    mixed.append(
+                        self._inline_picture_entry(item, eids)
+                        if item[0] == "picture"
+                        else self._math_entry(item, eids)
+                    )
                     last = k + 1
                 if text[last:]:
                     mixed.append(text[last:])
@@ -3658,6 +3737,12 @@ class NativeKFXGenerator:
             c.get("resource")
             for c in ch_data["all_chunks"]
             if isinstance(c, dict) and c.get("type") == "image"
+        } | {
+            # A picture inside a paragraph's words (#529).
+            resource
+            for c in ch_data["all_chunks"]
+            if isinstance(c, dict)
+            for _k, (resource, _alt, _size) in c.get("pictures") or ()
         }
         _orphans = {
             (res, loc)
@@ -4224,7 +4309,66 @@ class NativeKFXGenerator:
             all_chunks.append(chunk)
             return set(mine)
 
-        def _emit_paragraph(block):
+        def _inline_pictures(para, para_spans, offsets):
+            """(text, spans, offsets, pictures) for a paragraph whose words
+            hold pictures, or None (#529). Each picture becomes one
+            character, U+FFFC, and `pictures` lists (offset, (resource,
+            alt)): the paragraph stays one entry, its text and pictures
+            together, as Kindle Previewer 4.0.3 writes it. A paragraph of
+            pictures alone, one with a floated picture, or one with a picture
+            alone on its line (`<img/><br/>caption`, which Previewer writes
+            as a picture and then the text) is cut at them as before."""
+            tokens = list(IMG_TOKEN_RE.finditer(para))
+            if not tokens or any(m.group(4) for m in tokens):
+                return None
+            for line in para.split("\n"):
+                if IMG_TOKEN_RE.search(line) and not IMG_TOKEN_RE.sub("", line).strip():
+                    return None
+            text, cuts, pictures, last = [], [], [], 0
+            for m in tokens:
+                text.append(para[last : m.start()])
+                resource = _token_resource(
+                    m.group(1), image_resources, self._resolved_image_refs
+                )
+                at = sum(len(t) for t in text)
+                if resource is not None:
+                    pictures.append(
+                        (
+                            at,
+                            (resource[0], m.group(2).replace("\x02", " "), m.group(3)),
+                        )
+                    )
+                    text.append(INLINE_PICTURE)
+                cuts.append((m.start(), m.end(), 1 if resource is not None else 0))
+                last = m.end()
+            text.append(para[last:])
+
+            def moved(i):
+                # Where `i` lands once each token is one character, or none
+                # for a picture the book doesn't hold.
+                shift = 0
+                for start, end, kept in cuts:
+                    if i >= end:
+                        shift += end - start - kept
+                    elif i > start:
+                        return start - shift
+                    else:
+                        break
+                return i - shift
+
+            spans = [
+                (moved(s), moved(s + length) - moved(s), flags)
+                for s, length, flags in para_spans
+                if moved(s + length) > moved(s)
+            ]
+            return (
+                "".join(text),
+                spans,
+                {k: moved(v) for k, v in offsets.items()},
+                pictures,
+            )
+
+        def _emit_paragraph(block, inline_pictures=True):
             """A paragraph's chunks: its text, cut at each picture into text
             and image chunks, with spans and anchors placed on the piece
             holding them; anchors no piece holds go on the first chunk.
@@ -4247,6 +4391,13 @@ class NativeKFXGenerator:
             block_anchor_keys = block.get("anchor_keys") or []
             block_offsets = block.get("anchor_offsets") or {}
             block_first_chunk = len(all_chunks)
+            # Not in a table cell, whose pictures are entries of their own
+            # (#262).
+            inline = inline_pictures and _inline_pictures(
+                para, para_spans, block_offsets
+            )
+            if inline:
+                para, para_spans, block_offsets, pictures = inline
             space = 0.0 if block.get("tight") else _space_to_write(block)
             for chunk in _emit_text_chunks(para, preformatted):
                 if chunk["type"] == "image":
@@ -4287,6 +4438,8 @@ class NativeKFXGenerator:
                     block_anchor_keys = [
                         k for k in block_anchor_keys if k not in placed
                     ]
+                    if inline:
+                        all_chunks[-1]["pictures"] = pictures
             # Anything whose offset landed in no piece — a clamped
             # value, or text the chunker could not locate — belongs
             # to the block's first chunk rather than nowhere.
@@ -4512,7 +4665,7 @@ class NativeKFXGenerator:
                                 # with no style of its own, as Kindle
                                 # Previewer writes it (#262).
                                 first = len(all_chunks)
-                                unplaced += _emit_paragraph(para)
+                                unplaced += _emit_paragraph(para, inline_pictures=False)
                                 for ch in all_chunks[first:]:
                                     if (
                                         ch["type"] == "image"
@@ -4991,8 +5144,15 @@ class NativeKFXGenerator:
                         content_pos_id + n * self.CONTENT_POS_STEP for n in range(3)
                     )
                     content_pos_id += 3 * self.CONTENT_POS_STEP
+        # A picture inside a paragraph's words (#529): an id of its own.
+        picture_eids = {}
+        for chunk_idx, chunk in enumerate(all_chunks):
+            for n, _picture in enumerate(chunk.get("pictures") or ()):
+                picture_eids[chunk_idx, n] = (content_pos_id,)
+                content_pos_id += self.CONTENT_POS_STEP
         math_by_position = {}
         self._math_paths, self._math_strings, self._math_styles = [], [], []
+        self._inline_picture_styles = {}
         self._math_glyphs = {}
         #: {chapter: [(eid, reading)]}, numbered from 1 in each chapter: Kindle
         #: Previewer writes one ruby fragment per storyline.
@@ -5896,6 +6056,17 @@ class NativeKFXGenerator:
                     for s, length, flags in chunk_spans
                     if math_of(flags)
                 ]
+                maths += [
+                    (
+                        k,
+                        ("picture", resource, alt, size, blk_fs),
+                        picture_eids[chunk_idx, n],
+                    )
+                    for n, (k, (resource, alt, size)) in enumerate(
+                        chunk.get("pictures") or ()
+                    )
+                ]
+                maths.sort(key=lambda item: item[0])
                 if maths:
                     math_by_position[chunk_positions[chunk_idx]] = (
                         chunk["text"],
@@ -6045,6 +6216,12 @@ class NativeKFXGenerator:
             extra_style_names.append(self.RUBY_STYLE_NAME)
         for ch_idx, readings in ruby_readings.items():
             self.fragments.append(self.build_fragment_756(f"ruby{ch_idx}", readings))
+        for name, value in self._inline_picture_styles.values():
+            # Built after the pruning, as the equations' are (#529).
+            self.fragments.append(
+                YJFragment(fid=IS(name), ftype=IS("$157"), value=value)
+            )
+            extra_style_names.append(name)
         math_names = []
         if self._math_paths:
             self.symtab.create_local_symbol("mpaths")

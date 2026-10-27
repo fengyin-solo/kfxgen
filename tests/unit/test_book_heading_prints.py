@@ -134,11 +134,20 @@ def test_a_heading_holding_a_picture_keeps_it(tmp_path, heading, lines):
     for st in by_type(frags, "$259"):
         if str(st.fid) != "l0":
             continue
-        for e in iter_entries(val(st)["$146"]):
-            if not hasattr(e, "get"):
-                continue
-            if e.get("$175") is not None:
-                seq.append("[PIC]")
-            elif e.get("$145"):
-                seq.append(str(texts[str(e["$145"]["name"])][e["$145"]["$403"]]))
+
+        def walk(nodes):
+            for e in nodes or ():
+                if isinstance(e, str):
+                    # Words beside a picture, in its entry (#529).
+                    if e.strip():
+                        seq.append(e.strip())
+                elif e.get("$175") is not None:
+                    seq.append("[PIC]")
+                elif e.get("$145"):
+                    ref = e["$145"]
+                    seq.append(str(texts[str(ref["name"])][ref["$403"]]))
+                else:
+                    walk(e.get("$146"))
+
+        walk(val(st)["$146"])
     assert seq == lines

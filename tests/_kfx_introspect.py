@@ -85,6 +85,10 @@ def iter_entries(nodes):
     at the top level silently loses the cell text, so tests walk with this.
     """
     for node in nodes or ():
+        if isinstance(node, str):
+            # Text written in an entry beside a picture or an equation
+            # (#235, #529), not an entry of its own.
+            continue
         yield node
         children = node.get("$146") if hasattr(node, "get") else None
         if isinstance(children, list):

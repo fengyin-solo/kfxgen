@@ -344,6 +344,28 @@ def without_math(flags):
     )
 
 
+PICTURE_FLAG = "picture"
+_picture_serials = itertools.count()
+
+
+def make_picture_flag(resource, alt, pixels):
+    """Build the flag-set member that puts a picture inside a run's text,
+    as Kindle Previewer writes a picture in a paragraph's words (#529)."""
+    return (PICTURE_FLAG, (next(_picture_serials), resource, alt, pixels))
+
+
+def picture_of(flags):
+    """A run's picture as (serial, resource, alt, (width, height)), or None."""
+    return flag_value(flags, PICTURE_FLAG)
+
+
+def without_picture(flags):
+    """A run's flags less its picture, which is written as an entry."""
+    return frozenset(
+        f for f in flags if not (isinstance(f, tuple) and f[0] == PICTURE_FLAG)
+    )
+
+
 MONO_FLAG = "mono"
 
 #: Monospace families a book names without the generic `monospace` after them.

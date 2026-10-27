@@ -182,7 +182,8 @@ def test_a_floated_image_is_written_floated_before_its_text(tmp_path, cls, side)
 
 @pytest.mark.unit
 def test_an_image_not_floated_keeps_its_style(tmp_path):
-    body = f'<p><img class="full" src="i.jpg" alt="a"/>{WORDS}</p>'
+    # Alone in its paragraph: beside words it is inline (#529).
+    body = f'<p><img class="full" src="i.jpg" alt="a"/></p><p>{WORDS}</p>'
     style = _image_style(_entries(body, tmp_path=tmp_path))
     assert "$140" not in style
     assert style["$580"] == "$320"
@@ -193,7 +194,7 @@ def test_a_floated_and_a_plain_image_of_one_width_have_two_styles(tmp_path):
     css = dict(CSS, w30={"width": "30%"})
     body = (
         f'<p><img class="fl" src="i.jpg" alt="a"/>{WORDS}</p>'
-        f'<p><img class="w30" src="i.jpg" alt="b"/>{WORDS}</p>'
+        f'<p><img class="w30" src="i.jpg" alt="b"/></p><p>{WORDS}</p>'
     )
     styles = [s for k, s in _entries(body, css, tmp_path) if k == "image"]
     assert [s.get("$140") for s in styles] == ["$59", None]
@@ -210,7 +211,7 @@ def test_a_floated_image_with_no_size_is_floated_at_its_pixel_width(tmp_path):
 @pytest.mark.unit
 def test_a_book_with_no_float_writes_the_styles_it_did(tmp_path):
     """Same names and values: a floated image's style is allocated apart."""
-    body = f'<p><img class="full" src="i.jpg" alt="a"/>{WORDS}</p>'
+    body = f'<p><img class="full" src="i.jpg" alt="a"/></p><p>{WORDS}</p>'
     blocks = _blocks(body)
     out = tmp_path / "b.kfx"
     NativeKFXGenerator().generate_full_book(

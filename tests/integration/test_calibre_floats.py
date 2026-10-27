@@ -48,7 +48,8 @@ CASES = [
     ("wrapper", f'<p class="pfl"><img src="i.jpg" alt="wrapper"/></p><p>Wrap {WORDS}</p>'),
     ("attr", f'<p><img class="fl" src="i.jpg" alt="attr" width="200"/>Attr {WORDS}</p>'),
     ("linked", f'<p><a href="c.xhtml#lt"><img class="fl" src="i.jpg" alt="linked"/></a>Linked {WORDS}</p>'),
-    ("plain", f'<p><img class="w30" src="i.jpg" alt="plain"/>Plain {WORDS}</p>'),
+    # Alone in its paragraph: beside words a picture is inline (#529).
+    ("plain", f'<p><img class="w30" src="i.jpg" alt="plain"/></p><p>Plain {WORDS}</p>'),
     (
         "figure",
         '<div class="figl"><img src="i.jpg" alt="figure"/><p>A caption.</p></div>'
