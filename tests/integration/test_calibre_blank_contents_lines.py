@@ -18,7 +18,7 @@ REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "plugin"))
 sys.path.insert(0, str(REPO))
 
-from tests._kfx_introspect import by_type, load_fragments, val  # noqa: E402
+from tests._kfx_introspect import by_type, iter_entries, load_fragments, val  # noqa: E402
 from tests.integration.test_calibre_cover_in_text import _page  # noqa: E402
 from tests.integration.test_calibre_table_rows import (  # noqa: E402
     _ebook_convert,
@@ -32,6 +32,7 @@ FILES = {
     "<p><a href='c2.xhtml'>Two</a></p>",
     "c1.xhtml": "<h1>One</h1><p>First.</p><p id='mid'>Middle.</p>",
     "c2.xhtml": "<h1>Two</h1><p>Second.</p>",
+    "c3.xhtml": "<h1>Three</h1><p>Third.</p>",
 }
 
 
@@ -42,7 +43,7 @@ def _point(n, label, src, kids=""):
     )
 
 
-def _epub(path):
+def _epub(path, blank_top=False):
     with zipfile.ZipFile(path, "w") as z:
         z.writestr("mimetype", "application/epub+zip", compress_type=zipfile.ZIP_STORED)
         z.writestr(
@@ -71,6 +72,12 @@ def _epub(path):
             _point(1, "Contents", "contents.xhtml")
             + _point(2, "One", "c1.xhtml", _point(3, "", "c1.xhtml#mid"))
             + _point(4, "Two", "c2.xhtml")
+            # A top-level label of a space, kept by #459 as Previewer keeps it.
+            + (
+                _point(5, " ", "c3.xhtml")
+                if blank_top
+                else _point(5, "Three", "c3.xhtml")
+            )
         )
         z.writestr(
             "toc.ncx",
@@ -96,3 +103,24 @@ def test_every_listed_position_has_an_offset(calibre):  # noqa: F811
     }
     placed = {int(r["$185"]) for f in by_type(frags, "$265") for r in val(f)}
     assert listed - placed == set(), f"calibre {version}"
+
+
+def test_a_chapter_with_no_words_gets_no_contents_line(calibre):  # noqa: F811
+    """A top-level entry labelled ' ' names a chapter with no words: it gets
+    no line on the rebuilt Contents page, as a place with none gets none
+    (QA on #566: with the chapter-level check removed, a ' ' line
+    printed)."""
+    tmp, _env, version = calibre
+    epub, kfx = tmp / "bl566.epub", tmp / "bl566.kfx"
+    _epub(epub, blank_top=True)
+    _ebook_convert(calibre, epub, kfx, True)
+    frags = load_fragments(kfx)
+    content = {str(f.fid): list(val(f)["$146"]) for f in by_type(frags, "$145")}
+    blank = [
+        e["$155"]
+        for st in by_type(frags, "$259")
+        for e in iter_entries(val(st)["$146"])
+        if e.get("$145")
+        and not str(content[str(e["$145"]["name"])][int(e["$145"]["$403"])]).strip()
+    ]
+    assert blank == [], f"calibre {version}"
