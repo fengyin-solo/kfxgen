@@ -3137,17 +3137,14 @@ class NativeKFXGenerator:
                 continue
 
             # Text entry
-            ref_name, ref_index = content_refs[i]
             entry = IonStruct(
-                IS("$155"),
-                position,
-                IS("$157"),
-                IS(story_name),
-                IS("$159"),
-                IS("$269"),
-                IS("$145"),
-                IonStruct(IS("$4"), IS(ref_name), IS("$403"), ref_index),
+                IS("$155"), position, IS("$157"), IS(story_name), IS("$159"), IS("$269")
             )
+            if content_refs[i] is not None:
+                ref_name, ref_index = content_refs[i]
+                entry[IS("$145")] = IonStruct(
+                    IS("$4"), IS(ref_name), IS("$403"), ref_index
+                )
             if first_leaf:
                 entry[IS("$790")] = 1
                 first_leaf = False
@@ -3169,7 +3166,7 @@ class NativeKFXGenerator:
                     last = k + 1
                 if text[last:]:
                     mixed.append(text[last:])
-                del entry[IS("$145")]
+                entry.pop(IS("$145"), None)
                 entry[IS("$146")] = mixed
 
             if link_targets and i < len(link_targets) and link_targets[i]:
@@ -5231,8 +5228,17 @@ class NativeKFXGenerator:
         content_refs_per_chapter = []
         next_content_index = 1
         for ch_idx, (start, end) in enumerate(chapter_chunk_ranges):
+            # A paragraph holding an equation or a picture in its words is
+            # written with its text in its own content list, so none goes in
+            # the store, where nothing would point at it (#567).
             text_positions = [
-                i for i in range(start, end) if all_chunks[i].get("type") == "text"
+                i
+                for i in range(start, end)
+                if all_chunks[i].get("type") == "text"
+                and not all_chunks[i].get("pictures")
+                and not any(
+                    math_of(flags) for _s, _n, flags in all_chunks[i].get("spans") or ()
+                )
             ]
             if text_positions:
                 groups, refs = pack_content_fragments(
