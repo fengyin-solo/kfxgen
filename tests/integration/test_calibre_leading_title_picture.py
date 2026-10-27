@@ -83,10 +83,13 @@ def test_the_words_beside_a_picture_print_once(calibre, more):  # noqa: F811
     _ebook_convert(calibre, epub, kfx, True)
     frags = load_fragments(kfx)
     content = {str(f.fid): list(val(f)["$146"]) for f in by_type(frags, "$145")}
-    texts = [
-        str(content[str(e["$145"]["name"])][int(e["$145"]["$403"])])
-        for st in by_type(frags, "$259")
-        for e in iter_entries(val(st)["$146"])
-        if hasattr(e, "get") and e.get("$145")
-    ]
+    texts = []
+    for st in by_type(frags, "$259"):
+        for e in iter_entries(val(st)["$146"]):
+            if e.get("$145"):
+                ref = e["$145"]
+                texts.append(str(content[str(ref["name"])][int(ref["$403"])]))
+            elif str(e.get("$159")) == "$269":
+                # Words beside a picture, in the picture's entry (#529).
+                texts += [p.strip() for p in e.get("$146") or () if isinstance(p, str)]
     assert [t for t in texts if WORDS in t] == [WORDS], f"calibre {version}"

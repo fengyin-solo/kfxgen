@@ -240,7 +240,9 @@ def test_a_caption_beside_an_unsized_picture_keeps_its_styling(tmp_path):
     """pg28428: `<div class="figcenter" style="width: 350px">` holds the
     picture and `<span class="smcap">Fig. 16.</span>—…` as one paragraph.
     Filling the box once lengthened the picture's token, shifting the
-    caption's runs: the small caps covered 1 character instead of 8."""
+    caption's runs: the small caps covered 1 character instead of 8. The
+    picture is in the caption's line, so it is the entry's first character,
+    as Kindle Previewer 4.0.3 writes it (#529)."""
     css = dict(CSS, sc={"font-variant": "small-caps"})
     body = (
         '<div class="w300"><img src="i.jpg" alt="a"/>'
@@ -261,19 +263,19 @@ def test_a_caption_beside_an_unsized_picture_keeps_its_styling(tmp_path):
     )  # fmt: skip
     frags = load_fragments(out)
     styles = {str(f.fid): val(f) for f in by_type(frags, "$157")}
-    texts = {str(f.fid): list(val(f)["$146"]) for f in by_type(frags, "$145")}
     from tests._kfx_introspect import iter_entries
 
     for st in by_type(frags, "$259"):
         for e in iter_entries(val(st)["$146"]):
-            r = e.get("$145")
-            if r and str(texts[str(r["name"])][r["$403"]]).startswith("Fig. 16."):
+            parts = e.get("$146") if str(e.get("$159")) == "$269" else None
+            words = [str(x) for x in parts or () if isinstance(x, str)]
+            if words and words[0].startswith("Fig. 16."):
                 caps = [
                     (sp["$143"], sp["$144"])
                     for sp in e.get("$142") or []
                     if "$583" in styles.get(str(sp.get("$157")), {})
                 ]
-                assert caps == [(0, 8)]
+                assert caps == [(1, 8)]
                 return
     raise AssertionError("no caption paragraph")
 

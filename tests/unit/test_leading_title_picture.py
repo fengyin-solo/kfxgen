@@ -36,12 +36,16 @@ def _texts(tmp_path, first):
     )
     frags = load_fragments(out)
     content = {str(f.fid): list(val(f)["$146"]) for f in by_type(frags, "$145")}
-    return [
-        str(content[str(e["$145"]["name"])][int(e["$145"]["$403"])])
-        for st in by_type(frags, "$259")
-        for e in iter_entries(val(st)["$146"])
-        if hasattr(e, "get") and e.get("$145")
-    ]
+    texts = []
+    for st in by_type(frags, "$259"):
+        for e in iter_entries(val(st)["$146"]):
+            if e.get("$145"):
+                ref = e["$145"]
+                texts.append(str(content[str(ref["name"])][int(ref["$403"])]))
+            elif str(e.get("$159")) == "$269":
+                # Words beside a picture, in the picture's entry (#529).
+                texts += [p.strip() for p in e.get("$146") or () if isinstance(p, str)]
+    return texts
 
 
 @pytest.mark.parametrize("more", [[], ["Second paragraph."]], ids=["alone", "more"])

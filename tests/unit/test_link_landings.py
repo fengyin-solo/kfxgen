@@ -36,6 +36,12 @@ def _landings(kfx):
         for e in iter_entries(val(story)["$146"]):
             ref = e.get("$145")
             text = str(texts[str(ref["name"])][ref["$403"]]) if ref else ""
+            if not ref and str(e.get("$159")) == "$269":
+                # Words and a picture in one entry, the picture one
+                # character of it (#529).
+                text = "".join(
+                    p if isinstance(p, str) else "\ufffc" for p in e.get("$146") or ()
+                )
             entries[int(e["$155"])] = text
             for span in e.get("$142") or ():
                 if "$179" in span:
