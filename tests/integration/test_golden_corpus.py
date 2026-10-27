@@ -220,8 +220,9 @@ def test_native_tables_opt_out_matches_5_8_8(tmp_path):
     yj_jpg_rst_marker_present only when a book has them, so their three
     symbols are gone and `$270`'s symbol ids after them move down by 3; and
     the landmarks: the book has no cover, so `$389` has no `$236` container
-    and the symbol table no `nL` (#460); and the metadata: no invented
-    description or date (#454)."""
+    and the symbol table no `nL` (#460); the metadata: no invented
+    description or date (#454); and the heading navigation, built from the
+    book's headings (#461): `$389`'s other containers are unchanged."""
     from types import SimpleNamespace
 
     from tests._kfx_introspect import load_fragments, val
@@ -273,11 +274,15 @@ def test_native_tables_opt_out_matches_5_8_8(tmp_path):
         for f in by_type(old_path, "$585")["$590"]
         if str(f["$492"]) not in features
     ]
-    assert [repr(c) for c in by_type(fresh_path, "$389")[0]["$392"]] == [
-        repr(c)
-        for c in by_type(old_path, "$389")[0]["$392"]
-        if str(getattr(c, "value", c)["$235"]) != "$236"
-    ]
+
+    def navigation(path, leave_out):
+        return [
+            repr(c)
+            for c in by_type(path, "$389")[0]["$392"]
+            if str(getattr(c, "value", c)["$235"]) not in leave_out
+        ]
+
+    assert navigation(fresh_path, ("$798",)) == navigation(old_path, ("$798", "$236"))
     assert title_metadata(fresh_path) == [
         f
         for f in title_metadata(old_path)
