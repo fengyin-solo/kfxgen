@@ -277,3 +277,138 @@ def test_vertical_align_is_kept(tmp_path, value, symbol):
     """As Previewer writes it, `$44` (#565, probed with all eight)."""
     style = _picture_style(tmp_path, f"style='vertical-align:{value}'")
     assert style.get("$44") == symbol
+
+
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    [
+        # #565 item 4, Kindle Previewer 4.0.3 (probed): a line of only a
+        # picture ends the entry after it; the picture stays in the words
+        # before it.
+        (
+            "<p>M3 start <img src='s.jpg' alt='a'/> mid<br/>"
+            "<img src='s.jpg' alt='b'/><br/>end.</p>",
+            [
+                ["M3 start ", "pic", " mid\n", "pic"],
+                "end.",
+            ],
+        ),
+        # The first line alone: a picture entry, then the words, as #529.
+        (
+            "<p><img src='b.jpg' alt='a'/><br/>caption <img src='s.jpg' alt='b'/>"
+            " inline.</p>",
+            ["picture", ["caption ", "pic", " inline."]],
+        ),
+    ],
+    ids=["after-words", "first-line"],
+)
+def test_a_line_of_only_a_picture_ends_the_entry(tmp_path, body, expected):
+    entries = _book(tmp_path, f"<h1>One</h1>{body}<p>After.</p>")[1:-1]
+    got = [
+        [p if isinstance(p, str) else "pic" for p in e[1]]
+        if e[0] == "mixed"
+        else (e[1] if e[0] == "text" else "picture")
+        for e in entries
+    ]
+    assert got == expected
+
+
+def test_a_run_after_the_cut_stays_on_its_words(tmp_path):
+    """The second entry's italic run is moved by the cut, not left at the
+    paragraph's offsets (#565)."""
+    _book(
+        tmp_path,
+        "<h1>One</h1><p>Start <img src='s.jpg' alt='a'/> mid<br/>"
+        "<img src='s.jpg' alt='b'/><br/>an <i>end</i>.</p>",
+    )
+    frags = load_fragments(tmp_path / "i.kfx")
+    content = {str(f.fid): list(val(f)["$146"]) for f in by_type(frags, "$145")}
+    (runs,) = [
+        [
+            str(content[str(e["$145"]["name"])][int(e["$145"]["$403"])])[
+                int(r["$143"]) : int(r["$143"]) + int(r["$144"])
+            ]
+            for r in e.get("$142") or ()
+        ]
+        for st in by_type(frags, "$259")
+        for e in (getattr(x, "value", x) for x in val(st)["$146"])
+        if e.get("$145")
+        and str(content[str(e["$145"]["name"])][int(e["$145"]["$403"])]) == "an end."
+    ]
+    assert runs == ["end"]
+
+
+def test_a_link_to_the_words_after_the_cut_lands_on_them(tmp_path):
+    """An id in the entry after the cut keeps its place in it (#565)."""
+    from tests.unit.test_link_landings import _landings
+
+    _book(
+        tmp_path,
+        "<h1>One</h1><p>Start <img src='s.jpg' alt='a'/> mid<br/>"
+        "<img src='s.jpg' alt='b'/><br/>an <span id='e'>end</span>.</p>"
+        "<p><a href='c.xhtml#e'>To end</a></p>",
+    )
+    # From the word "end" on, not the entry's start.
+    assert _landings(tmp_path / "i.kfx")["To end"] == "end."
+
+
+def test_an_id_at_the_paragraphs_end_lands_there_after_the_cut(tmp_path):
+    """An id after the last word (#487) is at the paragraph's end, which no
+    piece held, and fell back to the first piece's start (QA on #590). It
+    lands on the last character, as on main and in Previewer's file."""
+    from tests.unit.test_link_landings import _landings
+
+    _book(
+        tmp_path,
+        "<h1>One</h1><p>E1 words<br/><img src='s.jpg' alt='a'/><br/>"
+        "caption ends here<a id='e1end'></a></p>"
+        "<p><a href='c.xhtml#e1end'>To end</a></p>",
+    )
+    assert _landings(tmp_path / "i.kfx")["To end"] == "e"
+
+
+def test_preformatted_text_with_a_picture_line_is_not_cut(tmp_path):
+    """Previewer keeps `<pre>` whole, a picture line and all (QA on #590)."""
+    entries = _book(
+        tmp_path,
+        "<h1>One</h1><pre>P1 code line\n<img src='s.jpg' alt='a'/>\nP1 more code</pre>",
+    )
+    (mixed,) = _mixed(entries)
+    assert [p if isinstance(p, str) else "pic" for p in mixed[1]] == [
+        "P1 code line\n",
+        "pic",
+        "\nP1 more code",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    [
+        (
+            "<p>W1 words<br/><br/><img src='b.jpg' alt='a'/></p>",
+            ["W1 words", "picture"],
+        ),
+        (
+            "<h1>W2 heading<br/><br/><img src='b.jpg' alt='a'/></h1>",
+            ["W2 heading", "picture"],
+        ),
+        # One <br/>: the picture stays in the words, as before.
+        (
+            "<p>W3 words<br/><img src='s.jpg' alt='a'/></p>",
+            [["W3 words\n", "pic"]],
+        ),
+    ],
+    ids=["paragraph", "heading", "one-break"],
+)
+def test_a_picture_line_after_an_empty_line_is_its_own_entry(tmp_path, body, expected):
+    """Previewer cuts before a line of only a picture when an empty line comes
+    before it: the words, then the picture as an entry (QA on #590, 2 library
+    books)."""
+    entries = _book(tmp_path, f"<h1>One</h1>{body}<p>After.</p>")[1:-1]
+    got = [
+        [p if isinstance(p, str) else "pic" for p in e[1]]
+        if e[0] == "mixed"
+        else (e[1] if e[0] == "text" else "picture")
+        for e in entries
+    ]
+    assert got == expected
