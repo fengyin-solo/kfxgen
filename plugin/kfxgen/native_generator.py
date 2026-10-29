@@ -125,24 +125,41 @@ def _cut_after_picture_lines(block):
             while j and not lines[j - 1].strip():
                 j -= 1
             words_end = sum(len(x) + 1 for x in lines[:j]) - 1
-            cuts.append((words_end, start, "\n" + " " * lines[j].count("\xa0")))
+            # A spacer line's own characters stay, its no-break spaces as
+            # plain ones, as Previewer writes them (QA on #628).
+            spacer = lines[j].lstrip(_ASCII_SPACE).replace("\xa0", " ")
+            if cuts and cuts[-1][0] == words_end:
+                # After a line of only a picture, cut there already (#590):
+                # one cut, the blank lines going to the next piece, as
+                # Previewer lands an id in them (QA on #628).
+                cuts[-1] = (words_end, start, None)
+            else:
+                cuts.append((words_end, start, "\n" + spacer))
         if has_picture and not IMG_TOKEN_RE.sub("", line).strip():
             if i < len(lines) - 1 and text[end + 1 :].strip():
                 cuts.append((end, end + 1, None))
         start = end + 1
     if not cuts:
         return [block]
-    pieces, a, empty_line_cut = [], 0, False
+    pieces, a, empty_line_cut, lo = [], 0, False, 0
+
+    def place(o, a, b, tail):
+        """Offset `o` on the piece [a, b): in the blank lines after it, at
+        the same place in its kept tail (#626, QA on #628)."""
+        if o <= b:
+            return max(o - a, 0)
+        return (b - a) + min(o - b - 1, len(tail) - 1)
+
     for b, after, tail in [*cuts, (len(text), None, None)]:
-        # A piece holds everything up to the next piece's start: an id after
-        # its last word (#487) or at its cut (QA on #590), and one in the
-        # blank lines after it, at its kept line break, as Previewer lands it
-        # (#626). One at the next piece's start, just before its words or
-        # picture (#592), is the next piece's.
+        # A piece holds its end (#487), its cut (QA on #590), and the blank
+        # lines after it when it keeps a tail, as Previewer lands an id there
+        # (#626). One at the next piece's start (#592), or in the blank lines
+        # after a picture line, is the next piece's.
+        hi = None if after is None else (after if tail is not None else b + 1)
         offsets = {
-            k: min((o or 0), b) - a
+            k: place(o or 0, a, b, tail or "")
             for k, o in (block.get("anchor_offsets") or {}).items()
-            if a <= (o or 0) and (after is None or (o or 0) < after)
+            if lo <= (o or 0) and (hi is None or (o or 0) < hi)
         }
         piece = {
             **block,
@@ -171,7 +188,7 @@ def _cut_after_picture_lines(block):
                 piece["block_style"] = {**piece["block_style"], "indent": None}
         pieces.append(piece)
         empty_line_cut = tail is not None
-        a = after
+        lo, a = hi, after
     # A key with no offset, or one past the text, stays on the first piece.
     placed = {k for p in pieces for k in p["anchor_keys"]}
     pieces[0]["anchor_keys"] = pieces[0]["anchor_keys"] + [
