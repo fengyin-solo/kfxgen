@@ -51,6 +51,13 @@ CASES = [
     "<table><tr><td>W3 cell first<br/><br/>W3 cell after</td><td>W3b</td></tr></table>",
     "<blockquote><p>W4 quote first<br/><br/>W4 quote after</p></blockquote>",
     "<p>W5 first<br/> <br/>W5 after a line of one space.</p>",
+    # A spacer line of no-break spaces (#626).
+    "<p>X1 first<br/>&#160;<br/>X1 after</p>",
+    "<p>X2 first<br/>&#160;&#160;<br/>X2 after</p>",
+    "<p>X4 first<br/>&#160;<br/>&#160;<br/>X4 after</p>",
+    "<p>X5 first<br/><br/>&#160;<br/>X5 after</p>",
+    # An id inside the blank lines (#626).
+    '<p>Y1 first<br/><span id="y1id"/><br/>Y1 after</p>',
 ]
 CSS = (
     ".ind { text-indent: 2em; } .mar { margin-top: 1em; margin-bottom: 2em; margin-left: 3em; } "
@@ -73,7 +80,8 @@ def _epub(out, key):
             "Lines",
             "<h1>Lines</h1>"
             + "".join(CASES)
-            + '<p><a href="c1.xhtml#v7id">To v7</a></p>',
+            + '<p><a href="c1.xhtml#v7id">To v7</a></p>'
+            + '<p><a href="c1.xhtml#y1id">To y1</a></p>',
         ),
         "c2.xhtml": _page("Two", "<h1>Two</h1><p>Second chapter.</p>"),
     }
@@ -153,6 +161,16 @@ PREVIEWER = [
     "W4 quote after",
     "W5 first\n",
     "W5 after a line of one space.",
+    "X1 first\n ",
+    "X1 after",
+    "X2 first\n  ",
+    "X2 after",
+    "X4 first\n ",
+    "X4 after",
+    "X5 first\n",
+    "X5 after",
+    "Y1 first\n",
+    "Y1 after",
 ]
 #: kfxgen's own value where it differs, by Previewer's.
 DIFFERENT = {
@@ -175,7 +193,9 @@ def test_a_paragraph_is_cut_at_an_empty_line(calibre):  # noqa: F811
         for e in iter_entries(val(st)["$146"]):
             if hasattr(e, "get") and e.get("$145"):
                 t = str(text[str(e["$145"]["name"])][int(e["$145"]["$403"])])
-                if t.lstrip("\u2022 ").startswith(("V", "W", "italic", "link")):
+                if t.lstrip("\u2022 ").startswith(
+                    ("V", "W", "X", "Y", "italic", "link")
+                ):
                     got.append(t)
     want = [w for p in PREVIEWER for w in DIFFERENT.get(p, [p])]
     assert got == want, f"calibre {version}: {got}"
@@ -190,3 +210,15 @@ def test_an_id_after_the_cut_lands_on_the_next_part(calibre):  # noqa: F811
     _epub(epub, "t2")
     _ebook_convert(calibre, epub, kfx, True)
     assert _landings(kfx)["To v7"] == "V7 id after.", f"calibre {version}"
+
+
+def test_an_id_in_the_blank_lines_lands_on_the_kept_break(calibre):  # noqa: F811
+    """Previewer lands a link to an id inside the blank lines on the part
+    before, at its kept line break (#626)."""
+    from tests.unit.test_link_landings import _landings
+
+    tmp, _env, version = calibre
+    epub, kfx = tmp / "v602c.epub", tmp / "v602c.kfx"
+    _epub(epub, "t3")
+    _ebook_convert(calibre, epub, kfx, True)
+    assert _landings(kfx)["To y1"] == "\n", f"calibre {version}"
