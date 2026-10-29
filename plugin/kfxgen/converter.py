@@ -6570,39 +6570,66 @@ def _rebuild_contents_page(contents_ch, all_chapters, log):
     # #594).
     listed = [_normalize_title(link["text"]) for link in toc_links]
     events = []  # ("link", words) or ("heading", line), in page order
+
+    def is_link(b):
+        return any(_is_link_flag(f) for _s, _n, fl in b.get("spans") or () for f in fl)
+
+    # Words the page links. A heading that is itself a link takes its entry
+    # whatever this holds.
+    linked = {_normalize_title(b.get("text") or "") for b in blocks if is_link(b)}
+
+    def entry(words, after):
+        """The first entry with `words` past entry `after`, else the first."""
+        hits = [i for i, w in enumerate(listed) if w == words]
+        return next((i for i in hits if i > after), hits[0])
+
+    last = -1  # the entry of the page's latest link
     for b in blocks:
         if b is first:
             continue
         words = _normalize_title(b.get("text") or "")
-        if b.get("heading_level") and words in listed:
+        merged = False
+        if (
+            b.get("heading_level")
+            and words in listed
+            and (is_link(b) or words not in linked)
+        ):
             # A heading the TOC lists, as a part's: its line prints as the
             # heading, its size, weight and level, as Kindle Previewer 4.0.3
-            # prints the page (#595), and keeps its link.
-            link = toc_links[listed.index(words)]
+            # prints the page (#595), and keeps its link. The entry is the
+            # one after the page's previous link (#614).
+            link = toc_links[entry(words, last)]
             link["heading_level"] = b["heading_level"]
             link["block_style"] = b.get("block_style")
-        if any(_is_link_flag(f) for _s, _n, fl in b.get("spans") or () for f in fl):
-            events.append(("link", _normalize_title(b.get("text") or "")))
-        elif b.get("heading_level") and (b.get("text") or "").strip():
-            if _normalize_title(b["text"]) not in listed:
-                events.append(
-                    (
-                        "heading",
-                        {
-                            "text": b["text"].strip(),
-                            "heading_level": b["heading_level"],
-                            "block_style": b.get("block_style"),
-                        },
-                    )
+            merged = True
+        if is_link(b):
+            if words in listed:
+                last = entry(words, last)
+            # The entry this link is, so a heading before it goes there (#618).
+            events.append(("link", last if words in listed else None))
+        elif b.get("heading_level") and words and not merged:
+            # A heading the TOC doesn't list, or one the page links from
+            # another line too: printed where it is (#585, #614).
+            events.append(
+                (
+                    "heading",
+                    {
+                        "text": b["text"].strip(),
+                        "heading_level": b["heading_level"],
+                        "block_style": b.get("block_style"),
+                    },
                 )
+            )
     inserts = []
     for n, (kind, line) in enumerate(events):
         if kind != "heading":
             continue
         after = next((w for k, w in events[n + 1 :] if k == "link"), None)
-        at = listed.index(after) if after in listed else len(listed)
-        inserts.append((at, line))
-    for at, line in sorted(inserts, key=lambda x: x[0], reverse=True):
+        at = after if after is not None else len(listed)
+        inserts.append((at, n, line))
+    # Last first, so earlier places don't move; two at one place keep the
+    # page's order (#618).
+    for at, _n, line in sorted(inserts, key=lambda x: x[:2], reverse=True):
         toc_links.insert(at, line)
     contents_ch.pop("blocks", None)
 
