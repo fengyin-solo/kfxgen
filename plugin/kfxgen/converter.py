@@ -73,6 +73,20 @@ from .inline_style import (
 )
 from .math_draw import draw as draw_math
 from .native_generator import NativeKFXGenerator
+from .resource_check import (
+    COVER as _RES_COVER,
+    IMAGE as _RES_IMAGE,
+    SVG as _RES_SVG,
+    REASON_MISSING as _RES_REASON_MISSING,
+    REASON_SVG_UNRASTERISED as _RES_REASON_SVG_UNRASTERISED,
+    REASON_SVG_UNREADABLE as _RES_REASON_SVG_UNREADABLE,
+    REASON_UNDECODABLE as _RES_REASON_UNDECODABLE,
+    REASON_UNREADABLE as _RES_REASON_UNREADABLE,
+    REASON_UNSUPPORTED_IMAGE as _RES_REASON_UNSUPPORTED_IMAGE,
+    ResourceIssues,
+    is_book_internal_ref as _is_book_internal_ref,
+    normalize_resource_ref as _normalize_resource_ref,
+)
 
 _ITALIC_TAGS = {"em", "i"}
 _BOLD_TAGS = {"strong", "b"}
@@ -6935,7 +6949,7 @@ def _extract_toc_with_hrefs(oeb_book, log):
     return toc_entries
 
 
-def extract_images_from_oeb(oeb_book, log, display_dims=None, own_size=()):
+def extract_images_from_oeb(oeb_book, log, display_dims=None, own_size=(), issues=None):
     """
     Walk OEB manifest for image/* items and return their raw bytes.
 
@@ -6951,6 +6965,10 @@ def extract_images_from_oeb(oeb_book, log, display_dims=None, own_size=()):
         own_size: hrefs of SVGs to draw at their own size: those shown in a
             table cell, where a picture has no style and its pixels are its
             size (#441 device check)
+        issues: Optional strict ResourceIssues collector; a picture that is
+            unreadable, an unsupported format, or an SVG that cannot be
+            rasterised is recorded there as well as warned, so strict mode
+            fails rather than shipping a page without its picture.
 
     Returns:
         dict: { href: bytes } for every image manifest item
@@ -6964,8 +6982,22 @@ def extract_images_from_oeb(oeb_book, log, display_dims=None, own_size=()):
             media = (getattr(item, "media_type", "") or "").lower()
             if "image" not in media:
                 continue
-            data = getattr(item, "data", None)
             href = getattr(item, "href", "") or ""
+            try:
+                data = getattr(item, "data", None)
+            except Exception:
+                # A manifest image whose bytes cannot be read (a file the
+                # book references but does not contain). Strict mode records
+                # it and keeps walking; off mode keeps its abort-and-warn.
+                if issues is None:
+                    raise
+                if href:
+                    issues.add(
+                        _RES_SVG if media == "image/svg+xml" else _RES_IMAGE,
+                        href,
+                        _RES_REASON_UNREADABLE,
+                    )
+                continue
             if media == "image/svg+xml":
                 if not href:
                     continue
@@ -6977,6 +7009,14 @@ def extract_images_from_oeb(oeb_book, log, display_dims=None, own_size=()):
                 if drawn is None:
                     skipped_unsupported += 1
                     log.warn(f"  Skipping image {href!r}: SVG not rasterised")
+                    if issues is not None:
+                        issues.add(
+                            _RES_SVG,
+                            href,
+                            _RES_REASON_SVG_UNREADABLE
+                            if not raw
+                            else _RES_REASON_SVG_UNRASTERISED,
+                        )
                     continue
                 log.info(f"  Rasterised SVG to PNG: {href!r}")
                 converted_svgs += 1
@@ -6985,6 +7025,8 @@ def extract_images_from_oeb(oeb_book, log, display_dims=None, own_size=()):
                     display_dims[href] = own
                 continue
             if not isinstance(data, (bytes, bytearray)) or not data:
+                if issues is not None:
+                    issues.add(_RES_IMAGE, href, _RES_REASON_UNREADABLE)
                 continue
             if not href:
                 continue
@@ -7012,6 +7054,8 @@ def extract_images_from_oeb(oeb_book, log, display_dims=None, own_size=()):
                         f"(magic bytes {bytes(data[:4]).hex()}); only JPEG and PNG "
                         f"are emitted as KFX resources"
                     )
+                    if issues is not None:
+                        issues.add(_RES_IMAGE, href, _RES_REASON_UNSUPPORTED_IMAGE)
                     continue
                 log.info(
                     f"  Converted GIF to PNG: {href!r} "
@@ -7034,7 +7078,7 @@ def extract_images_from_oeb(oeb_book, log, display_dims=None, own_size=()):
     return images
 
 
-def _get_cover_image_data(item, log):
+def _get_cover_image_data(item, log, issues=None):
     """Get binary cover-image data from a manifest item.
 
     Validates JPEG/PNG magic bytes before returning — Calibre identifies
@@ -7044,33 +7088,59 @@ def _get_cover_image_data(item, log):
 
     Validation is magic-byte-only by design; structurally invalid JPEGs
     (correct header, corrupt body) flow through and are rejected by Kindle
-    at render time.
+    at render time (and, under strict resources, by the later decode check).
 
     `log` is passed explicitly (rather than captured via closure) so this
     helper is independently testable and reusable across discovery paths.
+    A strict `issues` collector records a declared cover that is unreadable,
+    empty or of an unsupported image format.
     """
-    if not item or not hasattr(item, "data"):
-        return None
-    data = item.data
+    href = getattr(item, "href", "") or ""
+    if issues is None:
+        # Option-off path: keep the original behaviour exactly, including
+        # hasattr() swallowing a raising data property, so warnings and output
+        # bytes for existing books never change.
+        if not item or not hasattr(item, "data"):
+            return None
+        data = item.data
+    else:
+        if not item:
+            return None
+        try:
+            data = item.data
+        except AttributeError:
+            # No data attribute at all: not an image item, nothing to record.
+            return None
+        except Exception:
+            # A data property that raises (the book names the file but does
+            # not hold it). hasattr() would swallow this — access directly so
+            # the failure is visible and strict mode can name the href.
+            issues.add(_RES_COVER, href, _RES_REASON_UNREADABLE)
+            raise
     if not isinstance(data, bytes) or len(data) <= 100:
+        if issues is not None:
+            issues.add(_RES_COVER, href, _RES_REASON_UNREADABLE)
         return None
     if data[:3] != b"\xff\xd8\xff" and data[:4] != b"\x89PNG":
-        href = getattr(item, "href", "") or "<unknown>"
         log.warn(
-            f"  Skipping cover candidate {href!r}: unsupported format "
-            f"(magic bytes {bytes(data[:4]).hex()}); only JPEG and PNG "
+            f"  Skipping cover candidate {href or '<unknown>'!r}: unsupported "
+            f"format (magic bytes {bytes(data[:4]).hex()}); only JPEG and PNG "
             f"are accepted as cover images"
         )
+        if issues is not None:
+            issues.add(_RES_COVER, href, _RES_REASON_UNSUPPORTED_IMAGE)
         return None
     return data
 
 
-def _drop_undecodable(cover, cover_href, images, log):
+def _drop_undecodable(cover, cover_href, images, log, issues=None):
     """The cover and pictures without those calibre can't decode, each named
     in a warning. Written, they reached the book with no size, or a size
     read from garbage (4294967295 x 4294967295) (#471)."""
     if cover is not None and not decodes(cover):
         log.warn(f"  Skipping the cover {cover_href!r}: it can't be decoded")
+        if issues is not None:
+            issues.add(_RES_COVER, cover_href, _RES_REASON_UNDECODABLE)
         cover = None
     kept = {}
     for href, data in images.items():
@@ -7078,20 +7148,22 @@ def _drop_undecodable(cover, cover_href, images, log):
             kept[href] = data
         else:
             log.warn(f"  Skipping image {href!r}: it can't be decoded")
+            if issues is not None:
+                issues.add(_RES_IMAGE, href, _RES_REASON_UNDECODABLE)
     return cover, kept
 
 
-def _check_and_optimize(cover, cover_href, images, opts, log):
+def _check_and_optimize(cover, cover_href, images, opts, log, issues=None):
     """Pictures calibre can't decode left out (#471), and over-size ones
     optimized unless the user opted to embed originals (#11). The optimizer
     checks as it goes, so each picture is decoded once (#514)."""
     if getattr(opts, "kfxgen_embed_original_images", False):
         log.info("  Image optimization disabled (embed original images)")
-        return _drop_undecodable(cover, cover_href, images, log)
-    return optimize_images(cover, images, log, cover_href)
+        return _drop_undecodable(cover, cover_href, images, log, issues)
+    return optimize_images(cover, images, log, cover_href, issues)
 
 
-def extract_cover_image(oeb_book, log):
+def extract_cover_image(oeb_book, log, issues=None):
     """
     Extract cover image binary data from OEB book.
 
@@ -7101,6 +7173,10 @@ def extract_cover_image(oeb_book, log):
     Args:
         oeb_book: Calibre OEB book object
         log: Calibre logger
+        issues: Optional strict ResourceIssues collector; a cover the book
+            declares but that is missing, unreadable or of an unsupported
+            format is recorded (records are pruned later if another discovery
+            path still produces a usable cover).
 
     Returns:
         tuple: (bytes, href) or (None, None). The href is needed by the body
@@ -7113,11 +7189,16 @@ def extract_cover_image(oeb_book, log):
             cover_id = str(oeb_book.metadata.cover[0])
             log.info(f"  metadata.cover ID: {cover_id}")
 
+            declared = None
             for item in oeb_book.manifest:
                 if getattr(item, "id", None) == cover_id:
                     media_type = getattr(item, "media_type", "") or ""
                     if "image" in media_type:
-                        data = _get_cover_image_data(item, log)
+                        declared = item
+                        try:
+                            data = _get_cover_image_data(item, log, issues)
+                        except Exception:
+                            data = None
                         if data:
                             href = getattr(item, "href", "") or ""
                             log.info(
@@ -7127,14 +7208,23 @@ def extract_cover_image(oeb_book, log):
 
             # Also try as href (some books use href in metadata.cover)
             cover_item = oeb_book.manifest.hrefs.get(cover_id)
-            if cover_item:
-                data = _get_cover_image_data(cover_item, log)
+            if cover_item is not None and cover_item is not declared:
+                try:
+                    data = _get_cover_image_data(cover_item, log, issues)
+                except Exception:
+                    data = None
                 if data:
                     href = getattr(cover_item, "href", "") or cover_id
                     log.info(
                         f"  Cover image: {len(data):,} bytes from manifest href '{cover_id}'"
                     )
                     return data, href
+
+            # The book names a cover the manifest does not hold usable bytes
+            # for. Recorded now in case no other discovery path finds one;
+            # pruned if method 2/3 still returns a cover.
+            if issues is not None and declared is None and cover_item is None:
+                issues.add(_RES_COVER, cover_id, _RES_REASON_MISSING)
     except Exception as e:
         log.warn(f"Could not extract cover from metadata: {e}")
 
@@ -7149,7 +7239,14 @@ def extract_cover_image(oeb_book, log):
                     href = getattr(ref, "href", "")
                     if href:
                         item = oeb_book.manifest.hrefs.get(href)
-                        data = _get_cover_image_data(item, log)
+                        if item is None:
+                            if issues is not None:
+                                issues.add(_RES_COVER, href, _RES_REASON_MISSING)
+                            continue
+                        try:
+                            data = _get_cover_image_data(item, log, issues)
+                        except Exception:
+                            data = None
                         if data:
                             log.info(f"  Cover image: {len(data):,} bytes from guide")
                             return data, href
@@ -7163,7 +7260,12 @@ def extract_cover_image(oeb_book, log):
             item_href = (getattr(item, "href", "") or "").lower()
             media_type = (getattr(item, "media_type", "") or "").lower()
             if "image" in media_type and ("cover" in item_id or "cover" in item_href):
-                data = _get_cover_image_data(item, log)
+                # A heuristic candidate, not a declared cover: a rejection
+                # here is never a strict failure, so no issues collector.
+                try:
+                    data = _get_cover_image_data(item, log)
+                except Exception:
+                    data = None
                 if data:
                     href = getattr(item, "href", "") or ""
                     log.info(
@@ -7196,7 +7298,7 @@ def _ensure_oeb_opts(oeb_book, opts):
         pass
 
 
-def _font_table_for(oeb_book, opts, log):
+def _font_table_for(oeb_book, opts, log, issues=None):
     """Build the embedded-font table, or an empty one when the user opted out of
     embedding via the `kfxgen_disable_font_embedding` output option (#15 escape
     hatch).
@@ -7207,13 +7309,134 @@ def _font_table_for(oeb_book, opts, log):
     `$157` styles, and `override_kindle_font=False` — so the font
     installed/selected on the Kindle is used. Absent option (opts None or
     lacking the attr) embeds, preserving behavior for non-plugin callers.
+
+    `issues` is an optional strict ResourceIssues collector; with embedding
+    on, unusable @font-face sources are recorded for the strict gate. With
+    embedding off the book asks for no fonts, so none are checked.
     """
     from .font_table import FontTable, build_font_table  # noqa: PLC0415
 
     if getattr(opts, "kfxgen_disable_font_embedding", False):
         log.info("  Font embedding disabled (kfxgen_disable_font_embedding=True)")
         return FontTable([])
-    return build_font_table(oeb_book, log)
+    return build_font_table(oeb_book, log, issues=issues)
+
+
+def _iter_block_texts(block):
+    """Every text string a content block can carry, recursing into box blocks
+    and native-table cells. Picture tokens live in these texts, so this walks
+    exactly the resources a chapter's written content can name."""
+    if not isinstance(block, dict):
+        return
+    text = block.get("text")
+    if text:
+        yield text
+    for child in block.get("blocks") or ():  # a box's nested blocks
+        yield from _iter_block_texts(child)
+    tbl = block.get("table")
+    if tbl:
+        for row in tbl.get("rows") or ():
+            for cell in row.get("cells") or ():
+                for paragraph in cell.get("paragraphs") or ():
+                    yield from _iter_block_texts(paragraph)
+
+
+def _required_image_hrefs(chapters):
+    """The book-internal hrefs of picture tokens surviving in the written
+    chapters — the images the book's content actually requires. External
+    URLs and data: URIs are not book files and never appear here."""
+    refs = set()
+    for chapter in chapters or ():
+        for block in chapter.get("blocks") or ():
+            for text in _iter_block_texts(block):
+                for match in _IMG_TOKEN_RE.finditer(text):
+                    href = match.group(1)
+                    if _is_book_internal_ref(href):
+                        refs.add(href)
+    return refs
+
+
+def _manifest_image_media(oeb_book):
+    """{normalized image href: media type} for the manifest's image items, so
+    a missing picture can be reported with its real kind (SVG vs raster)."""
+    media_by_href = {}
+    for item in getattr(oeb_book, "manifest", None) or ():
+        media = (getattr(item, "media_type", "") or "").lower()
+        if "image" not in media:
+            continue
+        normalized = _normalize_resource_ref(getattr(item, "href", "") or "")
+        if normalized:
+            media_by_href[normalized] = media
+    return media_by_href
+
+
+def _image_survives(href, images, surviving_basenames):
+    """Whether a picture token's href names a resource that survived into the
+    final image dict. Mirrors native_generator._token_resource's lookup — exact
+    key, percent-decoded key, then a basename fallback only for refs the
+    resolver could not normalize (absolute-looking or still carrying ../)."""
+    bare = href.split("#", 1)[0].split("?", 1)[0] if href else ""
+    if not bare:
+        return False
+    if bare in images or unquote(bare) in images:
+        return True
+    if bare.startswith("/") or ".." in bare.replace("\\", "/").split("/"):
+        base = bare.rsplit("/", 1)[-1]
+        if base and base in surviving_basenames:
+            return True
+    return False
+
+
+def _declared_cover_ref(oeb_book):
+    """The id/href the book declares as its cover, or '' when it declares
+    none (a book with no cover at all is not a failure)."""
+    try:
+        cover = oeb_book.metadata.cover
+        if cover:
+            return str(cover[0])
+    except Exception:  # noqa: BLE001 - a book without readable metadata has none
+        return ""
+    return ""
+
+
+def _gate_strict_resources(
+    issues, oeb_book, chapters, images, cover_href, cover_image, log
+):
+    """Fail, before any KFX is written, when a required resource did not
+    survive conversion.
+
+    Adds the picture refs the chapters name but the final image dict lacks,
+    prunes records for resources the written book does not actually require
+    (an unreferenced corrupt image, a cover another path still found), and
+    raises the aggregated, stable-sorted error. A no-op for a non-strict
+    collector, so the option-off path is unchanged.
+    """
+    if not issues.strict:
+        return
+    media_by_href = _manifest_image_media(oeb_book)
+    required = _required_image_hrefs(chapters)
+    surviving_basenames = {h.rsplit("/", 1)[-1] for h in images}
+    for href in sorted(required):
+        if _image_survives(href, images, surviving_basenames):
+            continue
+        normalized = _normalize_resource_ref(href)
+        is_svg = media_by_href.get(normalized) == "image/svg+xml" or href.split("?", 1)[
+            0
+        ].lower().endswith(".svg")
+        kind = _RES_SVG if is_svg else _RES_IMAGE
+        # A specific reason (undecodable, unsupported, unrasterised, …) may
+        # already name this resource; don't pile a generic "missing" on it.
+        if issues.has_ref(href, (_RES_IMAGE, _RES_SVG)):
+            continue
+        issues.add(kind, href, _RES_REASON_MISSING)
+    declared_cover = _declared_cover_ref(oeb_book)
+    cover_broken = cover_image is None and bool(cover_href or declared_cover)
+    if cover_broken and not issues.has_kind(_RES_COVER):
+        # Guarantee a record naming the cover even when discovery failed on a
+        # path that records nothing itself.
+        issues.add(_RES_COVER, cover_href or declared_cover, _RES_REASON_MISSING)
+    issues.retain(keep_cover=cover_broken, required_image_refs=required)
+    issues.raise_if_any(log)
 
 
 def convert_oeb_to_kfx(oeb_book, output_path, opts, log):
@@ -7230,6 +7453,14 @@ def convert_oeb_to_kfx(oeb_book, output_path, opts, log):
         None (writes to output_path)
     """
     from . import __version__ as _kfxgen_version
+
+    # Strict resource mode (kfxgen_strict_resources, off by default): a
+    # required cover/picture/SVG/font that cannot be used fails the
+    # conversion before any KFX is written, instead of warning and shipping a
+    # book missing it. Off, every skip below behaves exactly as it always did.
+    issues = ResourceIssues(
+        strict=bool(getattr(opts, "kfxgen_strict_resources", False))
+    )
 
     # Make the conversion opts reachable via oeb_book.opts so Stylizer-based
     # CSS resolution (#9) and @font-face font extraction (#15) can construct.
@@ -7252,7 +7483,7 @@ def convert_oeb_to_kfx(oeb_book, output_path, opts, log):
     # Extract cover image (and the href it was located at, so we can skip it
     # in body-image extraction regardless of which method found it).
     log.info("Extracting cover image...")
-    cover_image, cover_href = extract_cover_image(oeb_book, log)
+    cover_image, cover_href = extract_cover_image(oeb_book, log, issues)
 
     # ISSUE-4 INVESTIGATION (image rendering): re-enable body image
     # emission with the new dedicated image style. Diagnostic build only
@@ -7264,11 +7495,12 @@ def convert_oeb_to_kfx(oeb_book, output_path, opts, log):
         log,
         display_dims=display_dims,
         own_size=_pictures_in_table_cells(oeb_book),
+        issues=issues,
     )
 
     cover_image, images = cmyk_to_rgb(cover_image, images, log)
     cover_image, images = _check_and_optimize(
-        cover_image, cover_href, images, opts, log
+        cover_image, cover_href, images, opts, log, issues
     )
 
     # Extract structured chapters
@@ -7289,7 +7521,14 @@ def convert_oeb_to_kfx(oeb_book, output_path, opts, log):
     log.info(f"  Total content: {total_chars:,} characters")
 
     # Build embedded-font table (#15), unless the user disabled embedding.
-    font_table = _font_table_for(oeb_book, opts, log)
+    font_table = _font_table_for(oeb_book, opts, log, issues)
+
+    # Strict mode: fail here — before any KFX bytes are written — with the
+    # aggregated, stable-sorted list of required resources that did not
+    # survive. No-op (and no reference scan) when the option is off.
+    _gate_strict_resources(
+        issues, oeb_book, chapters, images, cover_href, cover_image, log
+    )
 
     # Generate KFX
     log.info("Generating KFX file...")

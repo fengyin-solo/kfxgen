@@ -92,6 +92,20 @@ class KFXGenOutputPlugin(OutputFormatPlugin):
                 "as store books do."
             ),
         ),
+        OptionRecommendation(
+            name="kfxgen_strict_resources",
+            recommended_value=False,
+            help=(
+                "Fail the conversion when a cover, body image, SVG or embedded "
+                "font the book's own HTML or CSS references cannot be read, "
+                "decoded, or does not pass a built-in size limit, instead of "
+                "warning and writing a KFX that is missing it. Off by default: "
+                "missing or damaged resources are skipped with warnings and "
+                "the book converts anyway. No KFX is written on failure, and "
+                "external URLs are never treated as book resources. The "
+                "Customize-plugin setting of the same name can also turn it on."
+            ),
+        ),
     }
 
     # --- Customization (Preferences -> Plugins -> Customize) ---
@@ -127,6 +141,9 @@ class KFXGenOutputPlugin(OutputFormatPlugin):
             if prefs["open_at_cover"]:
                 opts.kfxgen_open_at_cover = True
                 log.info("  New books open at the cover, by plugin setting")
+            if prefs["strict_resources"]:
+                opts.kfxgen_strict_resources = True
+                log.info("  Strict resource checking on, by plugin setting")
         except Exception as e:
             log.warn("Could not read kfxgen plugin settings ({})".format(e))
 
@@ -168,6 +185,14 @@ class KFXGenOutputPlugin(OutputFormatPlugin):
             convert_oeb_to_kfx(oeb_book, output_path, opts, log)
             return
         except Exception as e:
+            # Strict resource failures are a deliberate answer, not a broken
+            # native run: never mask them with a Kindle Previewer fallback,
+            # which would convert anyway and could still write a KFX.
+            from .kfxgen.resource_check import StrictResourceError
+
+            if isinstance(e, StrictResourceError):
+                log.error("kfxgen: {}".format(e))
+                raise
             # Its type and traceback where a user sees them: an exception with
             # no message logged nothing after the colon (#434, #472).
             native_error = e

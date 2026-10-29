@@ -297,13 +297,26 @@ def _face_key(rule):
     )
 
 
-def faces_from_rules(rules, manifest_lookup, log, max_font_bytes=MAX_FONT_BYTES):
+def faces_from_rules(
+    rules, manifest_lookup, log, max_font_bytes=MAX_FONT_BYTES, issues=None
+):
     """Turn @font-face rule dicts + a manifest byte-lookup into Face objects.
 
     Skips (with a warning) rules whose family is missing, whose only resolvable
     src bytes are not TTF/OTF, or whose font exceeds `max_font_bytes` (#47 —
     resource-exhaustion defense). Dedups by resolved href.
+
+    When `issues` is a strict ResourceIssues collector, each skip is also
+    recorded there against its normalized book-internal src, so strict mode
+    can fail on the face; external URL srcs are never book resources.
     """
+    from .resource_check import (  # noqa: PLC0415
+        FONT,
+        REASON_FONT_NOT_A_FONT,
+        REASON_MISSING,
+        is_book_internal_ref,
+    )
+
     faces = []
     taken_names = set()
     seen_hrefs = set()
@@ -335,6 +348,20 @@ def faces_from_rules(rules, manifest_lookup, log, max_font_bytes=MAX_FONT_BYTES)
             if is_ttf_otf(data) or is_woff(data)
         ]
         if _face_key(rule) in sfnt_faces and not any(is_ttf_otf(d) for _, d in srcs):
+            # Another rule gives this face as TTF/OTF, so a WOFF-only rule
+            # adds nothing — unless that TTF/OTF later proves unusable, in
+            # which case this rule's missing/non-font src is still a broken
+            # reference strict mode should name. A WOFF src here is left to
+            # the TTF/OTF rule's outcome and recorded there if it fails.
+            if issues is not None:
+                for src_href in extract_src_urls(rule_field(rule, "src")):
+                    if not is_book_internal_ref(src_href):
+                        continue
+                    src_data = manifest_lookup(src_href)
+                    if src_data is None:
+                        issues.add(FONT, src_href, REASON_MISSING)
+                    elif not is_ttf_otf(src_data) and not is_woff(src_data):
+                        issues.add(FONT, src_href, REASON_FONT_NOT_A_FONT)
             continue
         # TTF/OTF first, in the author's order; a WOFF only when none fits.
         srcs.sort(key=lambda s: is_woff(s[1]))
@@ -348,6 +375,8 @@ def faces_from_rules(rules, manifest_lookup, log, max_font_bytes=MAX_FONT_BYTES)
                 data = unpacked[href]
                 if isinstance(data, ValueError):
                     log.warn(f"  Skipping @font-face {family!r} src {href!r}: {data}")
+                    if issues is not None:
+                        issues.add(FONT, href, str(data))
                     continue
             if len(data) > max_font_bytes:
                 log.warn(
@@ -355,11 +384,20 @@ def faces_from_rules(rules, manifest_lookup, log, max_font_bytes=MAX_FONT_BYTES)
                     f"{len(data)} bytes exceeds the {max_font_bytes}-byte cap "
                     f"(KFXGEN_MAX_FONT_BYTES)"
                 )
+                if issues is not None:
+                    issues.add(
+                        FONT,
+                        href,
+                        f"{len(data)} bytes exceeds the {max_font_bytes}-byte "
+                        f"embedded-font cap (KFXGEN_MAX_FONT_BYTES)",
+                    )
                 continue
             try:
                 _check_sfnt(data)
             except ValueError as e:
                 log.warn(f"  Skipping @font-face {family!r} src {href!r}: {e}")
+                if issues is not None:
+                    issues.add(FONT, href, str(e))
                 continue
             chosen_href, chosen_data = href, data
             break
@@ -368,6 +406,20 @@ def faces_from_rules(rules, manifest_lookup, log, max_font_bytes=MAX_FONT_BYTES)
                 f"  Skipping @font-face {family!r}: no embeddable TTF, OTF, "
                 f"WOFF or WOFF2 src"
             )
+            if issues is not None:
+                # Name each book-internal src the rule offered but nothing
+                # could embed: an href the manifest lacks (missing), or bytes
+                # that are not a font at all. External URL srcs are not book
+                # resources and stay uncounted. A WOFF/SFNT that parsed but
+                # failed validation was recorded at its own skip above.
+                for src_href in extract_src_urls(rule_field(rule, "src")):
+                    if not is_book_internal_ref(src_href):
+                        continue
+                    src_data = manifest_lookup(src_href)
+                    if src_data is None:
+                        issues.add(FONT, src_href, REASON_MISSING)
+                    elif not is_ttf_otf(src_data) and not is_woff(src_data):
+                        issues.add(FONT, src_href, REASON_FONT_NOT_A_FONT)
             continue
         if chosen_href in seen_hrefs:
             continue
@@ -439,7 +491,13 @@ def build_manifest_lookup(oeb_book):
     by_base = {}
     for item in getattr(oeb_book, "manifest", []) or []:
         href = getattr(item, "href", "") or ""
-        data = getattr(item, "data", None)
+        # A manifest entry whose file is missing can raise when its bytes are
+        # read; it simply offers no font data, so skip it instead of aborting
+        # the whole @font-face walk (strict mode names it at its own checks).
+        try:
+            data = getattr(item, "data", None)
+        except Exception:
+            continue
         if not href or not isinstance(data, (bytes, bytearray)):
             continue
         b = bytes(data)
@@ -483,24 +541,30 @@ def _default_stylizer_factory(oeb_book, log):
     return make
 
 
-def build_font_table(oeb_book, log, stylizer_factory=None):
+def build_font_table(oeb_book, log, stylizer_factory=None, issues=None):
     """Aggregate @font-face rules across the spine and build a FontTable.
 
     Fonts declared in shared CSS repeat per spine item; faces_from_rules dedups
     by resolved href. `stylizer_factory(item)` is injectable for tests. Books
     with no embeddable fonts yield an empty FontTable, preserving today's output.
+
+    `issues` is an optional strict ResourceIssues collector forwarded to
+    faces_from_rules so unusable @font-face sources fail strict conversions.
     """
     make = stylizer_factory or _default_stylizer_factory(oeb_book, log)
     all_rules = []
     for item in getattr(oeb_book, "spine", []) or []:
-        if getattr(item, "data", None) is None:
+        try:
+            if item.data is None:
+                continue
+        except Exception:
             continue
         st = make(item)
         if st is None:
             continue
         all_rules.extend(getattr(st, "font_face_rules", []) or [])
     lookup = build_manifest_lookup(oeb_book)
-    faces = faces_from_rules(all_rules, lookup, log)
+    faces = faces_from_rules(all_rules, lookup, log, issues=issues)
     if faces:
         log.info(f"  Embedded fonts: {len(faces)} face(s)")
     return FontTable(faces)

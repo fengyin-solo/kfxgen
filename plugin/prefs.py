@@ -23,3 +23,11 @@ prefs.defaults["disable_native_tables"] = False
 # it marks its text's start, as store books do (#579). The per-conversion CLI
 # option `--kfxgen-open-at-cover` can also turn it on; the two are OR'd.
 prefs.defaults["open_at_cover"] = False
+
+# Global default for strict resource checking. False (the default) keeps the
+# best-effort behaviour: a missing/damaged cover, picture, SVG or embedded
+# font is skipped with a warning and conversion still writes a KFX. True makes
+# any required resource the book's own HTML/CSS references but cannot use fail
+# the conversion before a KFX is written. The per-conversion CLI option
+# `--kfxgen-strict-resources` can also turn it on; the two are OR'd.
+prefs.defaults["strict_resources"] = False

@@ -43,9 +43,25 @@ class ConfigWidget(QWidget):
         )
         self.open_at_cover.setChecked(bool(prefs["open_at_cover"]))
         layout.addWidget(self.open_at_cover)
+
+        self.strict_resources = QCheckBox(
+            "Fail conversion when required images or fonts are missing or damaged",
+            self,
+        )
+        self.strict_resources.setToolTip(
+            "Off by default: a cover, body image, SVG or embedded font the book "
+            "references but that is missing, unreadable or undecodable is "
+            "skipped with a warning and conversion still produces a KFX. Check "
+            "this to fail the conversion instead, with no KFX written, until "
+            "every required resource is usable. The per-conversion "
+            "--kfxgen-strict-resources option can also turn it on."
+        )
+        self.strict_resources.setChecked(bool(prefs["strict_resources"]))
+        layout.addWidget(self.strict_resources)
         layout.addStretch(1)
 
     def save_settings(self):
         prefs["disable_font_embedding"] = self.disable_fonts.isChecked()
         prefs["disable_native_tables"] = self.disable_tables.isChecked()
         prefs["open_at_cover"] = self.open_at_cover.isChecked()
+        prefs["strict_resources"] = self.strict_resources.isChecked()

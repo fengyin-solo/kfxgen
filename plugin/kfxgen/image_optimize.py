@@ -355,9 +355,16 @@ def decodes(data):
     return True
 
 
-def optimize_images(cover_image, images, log, cover_href=None):
+def optimize_images(cover_image, images, log, cover_href=None, issues=None):
     """Optimize the cover and every body image, leaving out, each named in a
-    warning, those calibre can't decode (#471). Returns (cover, images)."""
+    warning, those calibre can't decode (#471). Returns (cover, images).
+
+    `issues` is an optional strict ResourceIssues collector: every dropped
+    picture is recorded so strict mode fails on it instead of shipping a
+    book with a missing picture.
+    """
+    from .resource_check import COVER, IMAGE, REASON_UNDECODABLE  # noqa: PLC0415
+
     max_dim = _read_env_int(
         "KFXGEN_IMAGE_MAX_DIM", DEFAULT_MAX_DIM, _MIN_MAX_DIM, _MAX_MAX_DIM, log
     )
@@ -373,6 +380,8 @@ def optimize_images(cover_image, images, log, cover_href=None):
         )
         if opt is None:
             log.warn(f"  Skipping image {href!r}: it can't be decoded")
+            if issues is not None:
+                issues.add(IMAGE, href, REASON_UNDECODABLE)
             continue
         before += len(data)
         after += len(opt)
@@ -388,6 +397,8 @@ def optimize_images(cover_image, images, log, cover_href=None):
         )
         if new_cover is None:
             log.warn(f"  Skipping the cover {cover_href!r}: it can't be decoded")
+            if issues is not None:
+                issues.add(COVER, cover_href, REASON_UNDECODABLE)
         else:
             before += len(cover_image)
             after += len(new_cover)
