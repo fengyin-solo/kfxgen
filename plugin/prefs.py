@@ -23,3 +23,11 @@ prefs.defaults["disable_native_tables"] = False
 # it marks its text's start, as store books do (#579). The per-conversion CLI
 # option `--kfxgen-open-at-cover` can also turn it on; the two are OR'd.
 prefs.defaults["open_at_cover"] = False
+
+# Global default for the optional JSON conversion report. Empty (the default)
+# writes no report and leaves conversion unchanged. Set to a file path to write
+# one JSON report there, atomically, after each successful KFX conversion —
+# chapter/character counts, navigation, image/font results, dropped resources,
+# media coverage and structured warnings. The per-conversion
+# `--kfxgen-report-path` option takes precedence when it is set.
+prefs.defaults["report_path"] = ""

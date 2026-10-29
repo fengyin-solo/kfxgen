@@ -498,7 +498,7 @@ def test_optimization_runs_by_default(monkeypatch, tmp_path):
     monkeypatch.setattr(
         _conv,
         "optimize_images",
-        lambda cover, images, log, cover_href: (
+        lambda cover, images, log, cover_href=None, report=None: (
             called.setdefault("yes", True),
             (b"C2", {"x.jpg": b"Y"}),
         )[1],
@@ -1266,7 +1266,7 @@ def test_font_table_for_default_embeds_delegating_to_build(monkeypatch):
     import kfxgen.font_table as _ft
 
     sentinel = _ft.FontTable([])
-    monkeypatch.setattr(_ft, "build_font_table", lambda oeb, log: sentinel)
+    monkeypatch.setattr(_ft, "build_font_table", lambda oeb, log, report=None: sentinel)
 
     class _NotDisabled:  # explicit opt-out = False -> embed
         kfxgen_disable_font_embedding = False

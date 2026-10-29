@@ -72,7 +72,7 @@ from .inline_style import (
     run_font_size,
 )
 from .math_draw import draw as draw_math
-from .native_generator import NativeKFXGenerator
+from .native_generator import NativeKFXGenerator, _token_resource
 
 _ITALIC_TAGS = {"em", "i"}
 _BOLD_TAGS = {"strong", "b"}
@@ -6036,9 +6036,11 @@ def _has_media_overlays(oeb_book):
     return False
 
 
-def _warn_media(oeb_book, log):
+def _warn_media(oeb_book, log, report=None):
     """Say once per book that its narration, audio and video are left out:
-    kfxgen writes neither (#248). A clip's fallback text is written."""
+    kfxgen writes neither (#248). A clip's fallback text is written. When a
+    report is collecting, hand it the same counts as structured media
+    coverage."""
     clips = files = 0
     for item in getattr(oeb_book, "spine", None) or ():
         # A page that doesn't parse is skipped, as in extraction (#73).
@@ -6052,12 +6054,17 @@ def _warn_media(oeb_book, log):
         clips += n
         files += bool(n)
     what = []
-    if _has_media_overlays(oeb_book):
+    narration = _has_media_overlays(oeb_book)
+    if narration:
         what.append("this book's read-aloud narration")
     if clips:
         what.append(
             f"{clips} audio or video clip{'s' if clips != 1 else ''} "
             f"in {files} file{'s' if files != 1 else ''}"
+        )
+    if report is not None:
+        report.set_media_coverage(
+            narration_omitted=narration, clips_omitted=clips, files=files
         )
     if what:
         log.warn(
@@ -6935,7 +6942,7 @@ def _extract_toc_with_hrefs(oeb_book, log):
     return toc_entries
 
 
-def extract_images_from_oeb(oeb_book, log, display_dims=None, own_size=()):
+def extract_images_from_oeb(oeb_book, log, display_dims=None, own_size=(), report=None):
     """
     Walk OEB manifest for image/* items and return their raw bytes.
 
@@ -6977,6 +6984,8 @@ def extract_images_from_oeb(oeb_book, log, display_dims=None, own_size=()):
                 if drawn is None:
                     skipped_unsupported += 1
                     log.warn(f"  Skipping image {href!r}: SVG not rasterised")
+                    if report is not None:
+                        report.resource_removed("image", href, "svg_not_rasterized")
                     continue
                 log.info(f"  Rasterised SVG to PNG: {href!r}")
                 converted_svgs += 1
@@ -7012,6 +7021,8 @@ def extract_images_from_oeb(oeb_book, log, display_dims=None, own_size=()):
                         f"(magic bytes {bytes(data[:4]).hex()}); only JPEG and PNG "
                         f"are emitted as KFX resources"
                     )
+                    if report is not None:
+                        report.resource_removed("image", href, "unsupported_format")
                     continue
                 log.info(
                     f"  Converted GIF to PNG: {href!r} "
@@ -7065,12 +7076,14 @@ def _get_cover_image_data(item, log):
     return data
 
 
-def _drop_undecodable(cover, cover_href, images, log):
+def _drop_undecodable(cover, cover_href, images, log, report=None):
     """The cover and pictures without those calibre can't decode, each named
     in a warning. Written, they reached the book with no size, or a size
     read from garbage (4294967295 x 4294967295) (#471)."""
     if cover is not None and not decodes(cover):
         log.warn(f"  Skipping the cover {cover_href!r}: it can't be decoded")
+        if report is not None and cover_href:
+            report.resource_removed("cover", cover_href, "undecodable")
         cover = None
     kept = {}
     for href, data in images.items():
@@ -7078,17 +7091,19 @@ def _drop_undecodable(cover, cover_href, images, log):
             kept[href] = data
         else:
             log.warn(f"  Skipping image {href!r}: it can't be decoded")
+            if report is not None:
+                report.resource_removed("image", href, "undecodable")
     return cover, kept
 
 
-def _check_and_optimize(cover, cover_href, images, opts, log):
+def _check_and_optimize(cover, cover_href, images, opts, log, report=None):
     """Pictures calibre can't decode left out (#471), and over-size ones
     optimized unless the user opted to embed originals (#11). The optimizer
     checks as it goes, so each picture is decoded once (#514)."""
     if getattr(opts, "kfxgen_embed_original_images", False):
         log.info("  Image optimization disabled (embed original images)")
-        return _drop_undecodable(cover, cover_href, images, log)
-    return optimize_images(cover, images, log, cover_href)
+        return _drop_undecodable(cover, cover_href, images, log, report=report)
+    return optimize_images(cover, images, log, cover_href=cover_href, report=report)
 
 
 def extract_cover_image(oeb_book, log):
@@ -7196,7 +7211,7 @@ def _ensure_oeb_opts(oeb_book, opts):
         pass
 
 
-def _font_table_for(oeb_book, opts, log):
+def _font_table_for(oeb_book, opts, log, report=None):
     """Build the embedded-font table, or an empty one when the user opted out of
     embedding via the `kfxgen_disable_font_embedding` output option (#15 escape
     hatch).
@@ -7213,7 +7228,51 @@ def _font_table_for(oeb_book, opts, log):
     if getattr(opts, "kfxgen_disable_font_embedding", False):
         log.info("  Font embedding disabled (kfxgen_disable_font_embedding=True)")
         return FontTable([])
-    return build_font_table(oeb_book, log)
+    return build_font_table(oeb_book, log, report=report)
+
+
+def _image_tokens_in_chapters(chapters):
+    """Every href named by an inline-image token in the final chapters,
+    including illustrations rescued from a replaced contents page
+    (`preserved_images`)."""
+    for ch in chapters:
+        texts = [ch.get("text") or ""]
+        texts.extend(ch.get("preserved_images") or [])
+        for text in texts:
+            for match in _IMG_TOKEN_RE.finditer(text):
+                yield match.group(1)
+
+
+def _unresolved_image_refs(chapters, images, cover_href):
+    """In-book image hrefs the content references but no emitted image (the
+    cover included) provides. Resolved exactly the way the generator resolves
+    a token, so a reported miss is a picture the reader will not see (#195):
+    exact href, then percent-decoded; a basename only for an href resolution
+    itself could not handle (rooted or escaping the book)."""
+    resources = {}
+    for href in set(images) | ({cover_href} if cover_href else set()):
+        resources[href] = True
+        resources[unquote(href)] = True
+        resources[href.rsplit("/", 1)[-1]] = True
+    missing = set()
+    for href in _image_tokens_in_chapters(chapters):
+        if _token_resource(href, resources, resolved_image_refs=True) is not None:
+            continue
+        bare = (href or "").split("#", 1)[0].split("?", 1)[0]
+        if bare:
+            missing.add(bare)
+    return sorted(missing)
+
+
+def _cover_format(cover_image):
+    """``"jpeg"`` / ``"png"`` for cover bytes, else None."""
+    if not cover_image:
+        return None
+    if cover_image[:3] == b"\xff\xd8\xff":
+        return "jpeg"
+    if cover_image[:4] == b"\x89PNG":
+        return "png"
+    return None
 
 
 def convert_oeb_to_kfx(oeb_book, output_path, opts, log):
@@ -7230,6 +7289,32 @@ def convert_oeb_to_kfx(oeb_book, output_path, opts, log):
         None (writes to output_path)
     """
     from . import __version__ as _kfxgen_version
+    from .report import (  # noqa: PLC0415
+        ConversionReport,
+        KfxgenReportError,
+        ReportLog,
+        report_path_from_opts,
+        write_report,
+    )
+
+    # The optional JSON report (kfxgen_report_path). Always collected while a
+    # path is configured — cheap, and it lets a write failure say what the
+    # book became — then written atomically only after the KFX succeeds. The
+    # wrapped log forwards every call and additionally records warnings, so
+    # existing log output is unchanged.
+    report_path = report_path_from_opts(opts)
+    if report_path is not None and os.path.abspath(report_path) == os.path.abspath(
+        output_path
+    ):
+        # The report is written after the KFX, to the same path os.replace
+        # would replace the book with JSON — refuse before doing the work.
+        raise KfxgenReportError(
+            "kfxgen_report_path must not be the same file as the KFX output: "
+            f"{report_path!r}"
+        )
+    report = ConversionReport() if report_path else None
+    if report is not None:
+        log = ReportLog(log, report)
 
     # Make the conversion opts reachable via oeb_book.opts so Stylizer-based
     # CSS resolution (#9) and @font-face font extraction (#15) can construct.
@@ -7264,11 +7349,12 @@ def convert_oeb_to_kfx(oeb_book, output_path, opts, log):
         log,
         display_dims=display_dims,
         own_size=_pictures_in_table_cells(oeb_book),
+        report=report,
     )
 
     cover_image, images = cmyk_to_rgb(cover_image, images, log)
     cover_image, images = _check_and_optimize(
-        cover_image, cover_href, images, opts, log
+        cover_image, cover_href, images, opts, log, report=report
     )
 
     # Extract structured chapters
@@ -7283,13 +7369,21 @@ def convert_oeb_to_kfx(oeb_book, output_path, opts, log):
         cover_href=cover_href,
         native_tables=native_tables,
     )
-    _warn_media(oeb_book, log)
+    _warn_media(oeb_book, log, report=report)
     total_chars = sum(len(ch["text"]) for ch in chapters)
     log.info(f"  Chapters: {len(chapters)}")
     log.info(f"  Total content: {total_chars:,} characters")
 
+    # Pictures the content names that no surviving resource provides, before
+    # generation removes anything further: each is a blank spot in the book.
+    if report is not None:
+        for href in _unresolved_image_refs(chapters, images, cover_href):
+            report.resource_unresolved(
+                "image", href, "referenced_in_content_but_missing"
+            )
+
     # Build embedded-font table (#15), unless the user disabled embedding.
-    font_table = _font_table_for(oeb_book, opts, log)
+    font_table = _font_table_for(oeb_book, opts, log, report=report)
 
     # Generate KFX
     log.info("Generating KFX file...")
@@ -7316,10 +7410,55 @@ def convert_oeb_to_kfx(oeb_book, output_path, opts, log):
         resolved_image_refs=True,
     )
 
-    if os.path.isfile(output_path):
-        size = os.path.getsize(output_path)
-        log.info("=" * 70)
-        log.info(f"KFX generated: {output_path} ({size:,} bytes)")
-        log.info("=" * 70)
-    else:
+    if not os.path.isfile(output_path):
         raise Exception("KFX generation failed - no output file created")
+    size = os.path.getsize(output_path)
+    log.info("=" * 70)
+    log.info(f"KFX generated: {output_path} ({size:,} bytes)")
+    log.info("=" * 70)
+
+    # The optional report is written last, only once the KFX exists: a
+    # failed conversion never leaves a report claiming it succeeded.
+    if report is not None:
+        gen_stats = getattr(gen, "generation_stats", {}) or {}
+        for href in gen_stats.get("unused_images_dropped", ()):
+            report.resource_removed("image", href, "present_but_not_referenced")
+        navigation = gen_stats.get("navigation") or {
+            "toc_entries": 0,
+            "landmarks": 0,
+            "page_list_entries": 0,
+        }
+        payload = report.payload(
+            {
+                "generator_version": _kfxgen_version,
+                "book": {
+                    "title": metadata["title"],
+                    "author": metadata["author"],
+                    "authors": metadata.get("authors"),
+                    "language": metadata["language"],
+                    "publisher": metadata["publisher"],
+                },
+                "content": {
+                    "chapters": len(chapters),
+                    "characters": total_chars,
+                },
+                "navigation": navigation,
+                "images": {
+                    "cover": {
+                        "present": cover_image is not None,
+                        "format": _cover_format(cover_image),
+                    },
+                    "body": {
+                        "emitted": int(gen_stats.get("body_images_emitted", 0)),
+                    },
+                },
+                "fonts": {
+                    "embedded_faces": len(font_table.faces),
+                    "embedding_disabled": bool(
+                        getattr(opts, "kfxgen_disable_font_embedding", False)
+                    ),
+                },
+            }
+        )
+        write_report(report_path, payload)
+        log.info(f"Conversion report written: {report_path}")

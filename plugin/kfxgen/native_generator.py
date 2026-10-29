@@ -3666,6 +3666,10 @@ class NativeKFXGenerator:
             return h.rsplit("/", 1)[-1]
 
         image_resources = {}
+        # Each body resource pair -> the manifest href it came from, so a
+        # resource later dropped as unused can be reported by its book-local
+        # name rather than by an internal img_N id (kfxgen_report_path).
+        pair_to_href = {}
         cover_hrefs = []  # body pictures that are the cover's (#475)
         self._image_dims = {}  # basename -> (width, height) for style picker
         self._footnote_keys = set(footnote_keys or ())
@@ -3708,6 +3712,7 @@ class NativeKFXGenerator:
             for idx, (href, data, fmt) in enumerate(valid):
                 resource_name = f"img_{idx}"
                 location_name = f"resource/img_{idx}"
+                pair_to_href[(resource_name, location_name)] = href
                 width, height = self._detect_image_dimensions(data)
                 self.fragments.append(
                     self.build_fragment_164(
@@ -3864,6 +3869,7 @@ class NativeKFXGenerator:
             for base, (res, loc) in image_resources.items()
             if res not in _displayed and res != cover_resource_name
         }
+        unused_image_hrefs = []
         if _orphans:
             _dead_names = {n for pair in _orphans for n in pair}
             self.fragments = [
@@ -3878,6 +3884,11 @@ class NativeKFXGenerator:
             # Recorded rather than logged: this method has no logger, and the
             # neighbouring basename-collision diagnostic uses the same channel.
             self._dropped_image_resources = sorted(res for res, _loc in _orphans)
+            # Book-local hrefs for the optional JSON report (one per dropped
+            # pair; several image_resources keys can name the same pair).
+            unused_image_hrefs = sorted(
+                {pair_to_href.get(pair, pair[0]) for pair in _orphans}
+            )
 
         story_names = ch_data["story_names"]
         storyline_names = ch_data["storyline_names"]
@@ -3964,6 +3975,28 @@ class NativeKFXGenerator:
                 pages=pages,
             )
         )
+
+        # What this KFX actually carries, for the optional JSON report
+        # (kfxgen_report_path). Counts AFTER the landing filters and the
+        # unused-resource drop above, so they answer "why is there no page
+        # navigation" from the file itself rather than from what was asked
+        # for. Plain instance data: it never enters a fragment, so the
+        # serialized KFX is byte-identical whether or not it is read.
+        self.generation_stats = {
+            "navigation": {
+                "toc_entries": len(nav_entries),
+                "landmarks": len(marks),
+                "page_list_entries": len(pages),
+            },
+            "body_images_emitted": len(
+                {
+                    pair
+                    for pair in image_resources.values()
+                    if pair[0] != cover_resource_name
+                }
+            ),
+            "unused_images_dropped": unused_image_hrefs,
+        }
 
         # 7. Build Fragment $258 (Reading Order Metadata)
         # Lists ALL sections in reading order (same as $538)

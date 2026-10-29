@@ -355,9 +355,13 @@ def decodes(data):
     return True
 
 
-def optimize_images(cover_image, images, log, cover_href=None):
+def optimize_images(cover_image, images, log, cover_href=None, report=None):
     """Optimize the cover and every body image, leaving out, each named in a
-    warning, those calibre can't decode (#471). Returns (cover, images)."""
+    warning, those calibre can't decode (#471). Returns (cover, images).
+
+    When `report` is given, each dropped picture is also recorded as a
+    removed resource, so the optional JSON report names what the book lost.
+    """
     max_dim = _read_env_int(
         "KFXGEN_IMAGE_MAX_DIM", DEFAULT_MAX_DIM, _MIN_MAX_DIM, _MAX_MAX_DIM, log
     )
@@ -373,6 +377,8 @@ def optimize_images(cover_image, images, log, cover_href=None):
         )
         if opt is None:
             log.warn(f"  Skipping image {href!r}: it can't be decoded")
+            if report is not None:
+                report.resource_removed("image", href, "undecodable")
             continue
         before += len(data)
         after += len(opt)
@@ -388,6 +394,8 @@ def optimize_images(cover_image, images, log, cover_href=None):
         )
         if new_cover is None:
             log.warn(f"  Skipping the cover {cover_href!r}: it can't be decoded")
+            if report is not None and cover_href:
+                report.resource_removed("cover", cover_href, "undecodable")
         else:
             before += len(cover_image)
             after += len(new_cover)

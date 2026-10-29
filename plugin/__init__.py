@@ -92,6 +92,19 @@ class KFXGenOutputPlugin(OutputFormatPlugin):
                 "as store books do."
             ),
         ),
+        OptionRecommendation(
+            name="kfxgen_report_path",
+            recommended_value=None,
+            help=(
+                "Write a JSON report for each successful KFX conversion to "
+                "this file path (chapter and character counts, TOC/landmark/"
+                "page-list counts, cover and image results, embedded fonts, "
+                "removed or unresolvable resources, media coverage, and "
+                "structured warnings). The file is written atomically and a "
+                "repeated conversion replaces it; its parent directory must "
+                "already exist. Leave unset to write no report."
+            ),
+        ),
     }
 
     # --- Customization (Preferences -> Plugins -> Customize) ---
@@ -127,6 +140,11 @@ class KFXGenOutputPlugin(OutputFormatPlugin):
             if prefs["open_at_cover"]:
                 opts.kfxgen_open_at_cover = True
                 log.info("  New books open at the cover, by plugin setting")
+            # The report path is a string, not an OR'd toggle: the
+            # per-conversion --kfxgen-report-path wins when it was given, and
+            # the Customize-dialog path fills in otherwise.
+            if not getattr(opts, "kfxgen_report_path", None) and prefs["report_path"]:
+                opts.kfxgen_report_path = prefs["report_path"]
         except Exception as e:
             log.warn("Could not read kfxgen plugin settings ({})".format(e))
 
@@ -168,6 +186,14 @@ class KFXGenOutputPlugin(OutputFormatPlugin):
             convert_oeb_to_kfx(oeb_book, output_path, opts, log)
             return
         except Exception as e:
+            # The KFX was generated but its optional JSON report could not be
+            # written. Retrying through Kindle Previewer would regenerate a
+            # fine book and still fail the same report — surface it instead.
+            from .kfxgen.report import KfxgenReportError
+
+            if isinstance(e, KfxgenReportError):
+                log.error(str(e))
+                raise
             # Its type and traceback where a user sees them: an exception with
             # no message logged nothing after the colon (#434, #472).
             native_error = e

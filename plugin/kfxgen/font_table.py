@@ -297,7 +297,9 @@ def _face_key(rule):
     )
 
 
-def faces_from_rules(rules, manifest_lookup, log, max_font_bytes=MAX_FONT_BYTES):
+def faces_from_rules(
+    rules, manifest_lookup, log, max_font_bytes=MAX_FONT_BYTES, report=None
+):
     """Turn @font-face rule dicts + a manifest byte-lookup into Face objects.
 
     Skips (with a warning) rules whose family is missing, whose only resolvable
@@ -348,6 +350,8 @@ def faces_from_rules(rules, manifest_lookup, log, max_font_bytes=MAX_FONT_BYTES)
                 data = unpacked[href]
                 if isinstance(data, ValueError):
                     log.warn(f"  Skipping @font-face {family!r} src {href!r}: {data}")
+                    if report is not None:
+                        report.resource_removed("font", href, "font_unpack_failed")
                     continue
             if len(data) > max_font_bytes:
                 log.warn(
@@ -355,11 +359,15 @@ def faces_from_rules(rules, manifest_lookup, log, max_font_bytes=MAX_FONT_BYTES)
                     f"{len(data)} bytes exceeds the {max_font_bytes}-byte cap "
                     f"(KFXGEN_MAX_FONT_BYTES)"
                 )
+                if report is not None:
+                    report.resource_removed("font", href, "font_too_large")
                 continue
             try:
                 _check_sfnt(data)
             except ValueError as e:
                 log.warn(f"  Skipping @font-face {family!r} src {href!r}: {e}")
+                if report is not None:
+                    report.resource_removed("font", href, "font_invalid")
                 continue
             chosen_href, chosen_data = href, data
             break
@@ -368,6 +376,8 @@ def faces_from_rules(rules, manifest_lookup, log, max_font_bytes=MAX_FONT_BYTES)
                 f"  Skipping @font-face {family!r}: no embeddable TTF, OTF, "
                 f"WOFF or WOFF2 src"
             )
+            if report is not None:
+                report.resource_removed("font", family, "font_no_embeddable_source")
             continue
         if chosen_href in seen_hrefs:
             continue
@@ -483,7 +493,7 @@ def _default_stylizer_factory(oeb_book, log):
     return make
 
 
-def build_font_table(oeb_book, log, stylizer_factory=None):
+def build_font_table(oeb_book, log, stylizer_factory=None, report=None):
     """Aggregate @font-face rules across the spine and build a FontTable.
 
     Fonts declared in shared CSS repeat per spine item; faces_from_rules dedups
@@ -500,7 +510,7 @@ def build_font_table(oeb_book, log, stylizer_factory=None):
             continue
         all_rules.extend(getattr(st, "font_face_rules", []) or [])
     lookup = build_manifest_lookup(oeb_book)
-    faces = faces_from_rules(all_rules, lookup, log)
+    faces = faces_from_rules(all_rules, lookup, log, report=report)
     if faces:
         log.info(f"  Embedded fonts: {len(faces)} face(s)")
     return FontTable(faces)

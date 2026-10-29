@@ -5,7 +5,18 @@ than in the conversion worker. The settings are the global font-embedding and
 native-table defaults; the per-conversion CLI flags can still disable them.
 """
 
-from qt.core import QCheckBox, QVBoxLayout, QWidget
+import os
+
+from qt.core import (
+    QCheckBox,
+    QFileDialog,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QPushButton,
+    QVBoxLayout,
+    QWidget,
+)
 
 from calibre_plugins.kfxgen.prefs import prefs
 
@@ -43,9 +54,45 @@ class ConfigWidget(QWidget):
         )
         self.open_at_cover.setChecked(bool(prefs["open_at_cover"]))
         layout.addWidget(self.open_at_cover)
+
+        report_label = QLabel("Conversion report (JSON), optional:", self)
+        report_label.setToolTip(
+            "After each successful KFX conversion, write a JSON report to this "
+            "file: chapter and character counts, TOC/landmark/page-list counts, "
+            "cover and image results, embedded fonts, removed or unresolvable "
+            "resources, media coverage and structured warnings. Leave blank to "
+            "write none. The file is replaced atomically on every conversion; "
+            "its parent folder must already exist. The per-conversion "
+            "--kfxgen-report-path option overrides this."
+        )
+        layout.addWidget(report_label)
+
+        report_row = QHBoxLayout()
+        self.report_path = QLineEdit(self)
+        self.report_path.setPlaceholderText("No report")
+        self.report_path.setText(str(prefs["report_path"] or ""))
+        self.report_path.setToolTip(report_label.toolTip())
+        report_row.addWidget(self.report_path)
+        self.report_browse = QPushButton("Browse…", self)
+        self.report_browse.clicked.connect(self._choose_report_path)
+        report_row.addWidget(self.report_browse)
+        layout.addLayout(report_row)
+
         layout.addStretch(1)
+
+    def _choose_report_path(self):
+        start = self.report_path.text().strip() or os.path.expanduser("~")
+        path, _selected = QFileDialog.getSaveFileName(
+            self,
+            "Choose the kfxgen conversion report file",
+            start,
+            "JSON reports (*.json);;All files (*)",
+        )
+        if path:
+            self.report_path.setText(path)
 
     def save_settings(self):
         prefs["disable_font_embedding"] = self.disable_fonts.isChecked()
         prefs["disable_native_tables"] = self.disable_tables.isChecked()
         prefs["open_at_cover"] = self.open_at_cover.isChecked()
+        prefs["report_path"] = self.report_path.text().strip()
