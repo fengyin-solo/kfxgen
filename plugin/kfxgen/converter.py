@@ -285,15 +285,41 @@ def _css_size_px(value, inherited, root_px):
     return inherited
 
 
-def _q_css(stylizer, q):
+def _pseudo_rules(style):
+    """Calibre's pseudo-element rule dict of a Style (::before, ::after,
+    ::marker, ::first-letter, …), or {} when it has none. The pseudo names
+    arrive as the selector spelt them, so callers match them
+    case-insensitively."""
+    pseudo = getattr(style, "pseudo_classes", None)
+    return pseudo(()) if pseudo is not None else {}
+
+
+def _pseudo_content(rules, name):
+    """The `content` of the pseudo-element `name` in calibre's rule dict,
+    the name matched case-insensitively, or None."""
+    wanted = name.lower()
+    for key, rule in (rules or {}).items():
+        if str(key).lower() == wanted:
+            return dict(rule).get("content")
+    return None
+
+
+def _gen_css(rules):
+    """The ::before/::after/::marker `content` calibre has for an element,
+    each None when the pseudo-element declares none. ::marker is what a
+    list item prints in place of its usual number."""
+    gen = {side: _pseudo_content(rules, side) for side in ("before", "after", "marker")}
+    return gen if any(v is not None for v in gen.values()) else None
+
+
+def _q_css(stylizer, q, rules=None):
     """A <q>'s `quotes`, and its ::before and ::after `content`, as calibre's
     Stylizer has them: what Kindle Previewer prints in place of the
     language's marks (#503 QA). `quotes` inherits: the nearest element
     declaring it, up to one whose lang differs from its parent's, where a
     browser's own sheet sets that language's marks."""
-    st = stylizer.style(q)
-    pseudo = getattr(st, "pseudo_classes", None)
-    rules = pseudo(()) if pseudo is not None else {}
+    if rules is None:
+        rules = _pseudo_rules(stylizer.style(q))
     quotes = None
     for a in (q, *q.iterancestors()):
         value = (stylizer.style(a).get("quotes") or "").strip()
@@ -304,8 +330,8 @@ def _q_css(stylizer, q):
             break
     return {
         "quotes": quotes,
-        "before": dict(rules.get("before") or {}).get("content"),
-        "after": dict(rules.get("after") or {}).get("content"),
+        "before": _pseudo_content(rules, "before"),
+        "after": _pseudo_content(rules, "after"),
     }
 
 
@@ -329,14 +355,20 @@ def _starts_a_language(elem):
     return own != (_lang_of(parent) if parent is not None else None)
 
 
-def _first_letter_css(stylizer, elem, cache):
+def _first_letter_css(stylizer, elem, cache, rules=None):
     """The paragraph's `::first-letter` CSS, its font size in CSS px, or None.
     calibre keeps the rule on the paragraph's style for KFX; it makes a span
     of the letter only for MOBI and DOCX (#240)."""
     # calibre's is a method: `pseudo_classes(filter_css)` copies the rules
     # without the properties named in `filter_css`.
-    pseudo = getattr(stylizer.style(elem), "pseudo_classes", None)
-    rule = pseudo(()).get("first-letter") if pseudo is not None else None
+    if rules is None:
+        pseudo = getattr(stylizer.style(elem), "pseudo_classes", None)
+        rules = pseudo(()) if pseudo is not None else {}
+    rule = None
+    for key, value in rules.items():
+        if str(key).lower() == "first-letter":
+            rule = value
+            break
     if not rule:
         return None
     css = dict(rule)
@@ -407,6 +439,9 @@ def _build_style_resolver(oeb_book, item, log, stylizer_factory=None):
         def resolve(elem):
             try:
                 st = stylizer.style(elem)
+                # One deepcopy of the pseudo-element rules per element: the
+                # <q> marks, the drop cap and generated content all read it.
+                pseudo_rules = _pseudo_rules(st)
                 return {
                     # A number, in CSS px; the generator measures it
                     # against the book's main text size (#241).
@@ -418,14 +453,22 @@ def _build_style_resolver(oeb_book, item, log, stylizer_factory=None):
                     # inherits. Only a <p> is read for an initial, and
                     # calibre copies the rules on each call (#376 review).
                     "first-letter": (
-                        _first_letter_css(stylizer, elem, sizes)
+                        _first_letter_css(stylizer, elem, sizes, pseudo_rules)
                         if _local_tag(elem.tag) == "p"
                         else None
                     ),
                     # A <q>'s marks as the book styles them (#503 QA).
                     "q-css": (
-                        _q_css(stylizer, elem) if _local_tag(elem.tag) == "q" else None
+                        _q_css(stylizer, elem, pseudo_rules)
+                        if _local_tag(elem.tag) == "q"
+                        else None
                     ),
+                    # Generated ::before/::after/::marker content, and the
+                    # counter properties that feed it. Declared, none of
+                    # them inherits: the element's own value or None.
+                    "gen": _gen_css(pseudo_rules),
+                    "counter-reset": st.get("counter-reset"),
+                    "counter-increment": st.get("counter-increment"),
                     "float": st.get("float"),
                     # Declared: it doesn't inherit (#381).
                     "clear": st.get("clear"),
@@ -1295,22 +1338,77 @@ _Q_PLAIN = "\"\"''"
 _CSS_STRING_RE = re.compile(r'"((?:[^"\\]|\\.)*)"|\'((?:[^\'\\]|\\.)*)\'')
 
 
+def _css_unescape(text):
+    """The escapes in a CSS string read: "\\201C" a quotation mark, "\\."
+    the escaped character."""
+    text = re.sub(r"\\([0-9a-fA-F]{1,6})\s?", lambda m: chr(int(m.group(1), 16)), text)
+    return re.sub(r"\\(.)", r"\1", text)
+
+
 def _css_strings(value):
     """The strings in a CSS value, escapes read ("\\201C" is a quotation
     mark)."""
-
-    def unescape(text):
-        text = re.sub(
-            r"\\([0-9a-fA-F]{1,6})\s?", lambda m: chr(int(m.group(1), 16)), text
-        )
-        return re.sub(r"\\(.)", r"\1", text)
-
-    return [unescape(a or b) for a, b in _CSS_STRING_RE.findall(value or "")]
+    return [_css_unescape(a or b) for a, b in _CSS_STRING_RE.findall(value or "")]
 
 
 _CONTENT_TOKEN_RE = re.compile(
     r'"((?:[^"\\]|\\.)*)"|\'((?:[^\'\\]|\\.)*)\'|([a-zA-Z-]+)\(([^)]*)\)|([a-zA-Z-]+)'
 )
+
+#: The functions a `content` value may hold that print a CSS counter.
+_COUNTER_FNS = frozenset({"counter", "counters"})
+
+
+def _content_args(arg):
+    """The comma-separated arguments of a content function, each a bare
+    token or a CSS string with escapes read. Quoting is kept on `quoted`,
+    so `counters(c, ".")` is distinguished from `counter(c, decimal)`."""
+    out, i, n = [], 0, len(arg or "")
+    while i < n:
+        while i < n and arg[i] in " \t\n\r\f,":
+            i += 1
+        if i >= n:
+            break
+        if arg[i] in "\"'":
+            quote, j, buf = arg[i], i + 1, []
+            while j < n:
+                if arg[j] == "\\" and j + 1 < n:
+                    buf.append(arg[j : j + 2])
+                    j += 2
+                    continue
+                if arg[j] == quote:
+                    j += 1
+                    break
+                buf.append(arg[j])
+                j += 1
+            out.append((True, _css_unescape("".join(buf))))
+            i = j
+        else:
+            j = i
+            while j < n and arg[j] not in ", \t\n\r\f":
+                j += 1
+            out.append((False, arg[i:j]))
+            i = j
+    return out
+
+
+def _counter_decls(value):
+    """The (name, number) pairs in a counter-reset/-increment value: each
+    name optionally followed by an integer, `none` and an empty value no
+    pairs. The number is None where the declaration omits one, so the two
+    properties can apply their own default."""
+    tokens = str(value or "").split()
+    if not tokens or tokens[0].strip().lower() == "none":
+        return []
+    pairs = []
+    i = 0
+    while i < len(tokens):
+        name, i = tokens[i].strip(), i + 1
+        number = None
+        if i < len(tokens) and re.fullmatch(r"[+-]?\d+", tokens[i].strip()):
+            number, i = int(tokens[i]), i + 1
+        pairs.append((name, number))
+    return pairs
 
 
 def _q_pair(q, css, depth):
@@ -1330,12 +1428,15 @@ def _q_pair(q, css, depth):
     return pair
 
 
-def _q_content(q, css, side, depth):
+def _q_content(q, css, side, depth, counter_texts=()):
     """What a <q>'s ::before or ::after prints, and the quote depth after it,
     as Kindle Previewer 4.0.3 counts it (#504): open-quote raises the depth
     and close-quote lowers it, never below 0, as in CSS; a keyword prints
     its mark only alone, open-quote in ::before and close-quote in ::after.
-    Strings and attr() print; counter() and counters() print nothing."""
+    Strings, attr() and the counters print: counter()/counters() take their
+    text, in token order, from `counter_texts` (empty when the document has
+    no counter state)."""
+    counter_texts = iter(counter_texts)
     value = (css.get(side) or "").strip()
     if value in ("", "normal"):
         value = "open-quote" if side == "before" else "close-quote"
@@ -1346,8 +1447,11 @@ def _q_content(q, css, side, depth):
     out = []
     for dq, sq, fn, arg, word in tokens:
         if fn:
-            if fn.lower() == "attr":
+            kind = fn.lower()
+            if kind == "attr":
                 out.append(q.get(arg.strip()) or "")
+            elif kind in _COUNTER_FNS:
+                out.append(next(counter_texts, ""))
         elif word:
             word = word.lower()
             if word in ("open-quote", "no-open-quote"):
@@ -1366,7 +1470,10 @@ def _q_content(q, css, side, depth):
 
 def _document_q_marks(root, css_of):
     """{q: (open, close)} for every <q> in `root`'s document, the quote depth
-    running on across it in reading order, as Previewer counts it (#504)."""
+    running on across it in reading order, as Previewer counts it (#504).
+    This stands alone for a <q> copied out of its document; the main walk
+    resolves its counters, a copied node has no counter state and its
+    counter()/counters() print nothing."""
     from lxml import etree
 
     marks, depth = {}, 0
@@ -1382,32 +1489,253 @@ def _document_q_marks(root, css_of):
     return {q: tuple(m) for q, m in marks.items()}
 
 
-# The last document's marks: a document's blocks are walked in turn, with one
-# resolver for the document (#504).
-_Q_DOCUMENT = {}
+# ── CSS counters ─────────────────────────────────────────────────────────────
+#
+# counter-reset opens a counter's scope on an element; counter-increment steps
+# the nearest one in scope. counter(name) reads the innermost instance and
+# counters(name, sep) all of them from the outside in, the nesting chapter
+# numbers "1.2.3" are built from. State is per spine document and never leaks
+# to the next one.
+
+
+class _CounterState:
+    """The counters live at one point of a document-order tree walk.
+
+    Each instance is (name, value, die_depth): reset on an element at depth d
+    is visible through that element, its descendants and its following
+    siblings, exactly the CSS scope, so it dies when the element's parent
+    closes — the end event whose depth is d - 1. An increment naming no live
+    counter instantiates it on the parent, as CSS Lists says, so it lives one
+    level longer still."""
+
+    def __init__(self):
+        self._active = []  # outer-first [name, value, die_depth]
+
+    def reset(self, name, value, depth):
+        self._active.append([name, value, depth - 1])
+
+    def apply(self, reset_value, increment_value, depth):
+        # Reset before increment, as CSS orders the two properties.
+        for name, number in _counter_decls(reset_value):
+            self.reset(name, 0 if number is None else number, depth)
+        for name, step in _counter_decls(increment_value):
+            for entry in reversed(self._active):
+                if entry[0] == name:
+                    entry[1] += 1 if step is None else step
+                    break
+            else:
+                # No instance in scope: one on the parent, starting at 0.
+                self._active.append([name, 1 if step is None else step, depth - 2])
+
+    def value(self, name):
+        """The innermost value of `name`, or None when it is not in scope: an
+        unknown counter prints nothing rather than CSS's 0."""
+        for entry in reversed(self._active):
+            if entry[0] == name:
+                return entry[1]
+        return None
+
+    def values(self, name):
+        """Every live value outer-first, the chain counters() joins."""
+        return [entry[1] for entry in self._active if entry[0] == name]
+
+    def close(self, depth):
+        """Drop instances that die when the element at `depth` closes."""
+        if self._active:
+            self._active = [e for e in self._active if e[2] != depth]
+
+
+def _counter_fn_text(kind, arg, state):
+    """The text one counter()/counters() function prints. An unknown name
+    prints nothing, as does a malformed function; a style outside its range
+    or not known falls back to decimal, as CSS defines."""
+    args = _content_args(arg)
+    if not args or args[0][0]:
+        return ""
+    name = args[0][1]
+    if kind == "counter":
+        if len(args) < 2 or args[1][0]:
+            style = "decimal"
+        else:
+            style = args[1][1]
+        value = state.value(name)
+        return "" if value is None else _format_ordinal(value, style.lower())
+    # counters(name, separator[, style]): the separator must be a string.
+    if len(args) < 2 or not args[1][0]:
+        return ""
+    separator = args[1][1]
+    if len(args) < 3 or args[2][0]:
+        style = "decimal"
+    else:
+        style = args[2][1]
+    values = state.values(name)
+    if not values:
+        return ""
+    return separator.join(_format_ordinal(v, style.lower()) for v in values)
+
+
+def _counter_token_texts(value, state):
+    """counter()/counters() texts in a content value, in token order — what
+    the <q> resolver consumes while it handles the quote keywords."""
+    if not value:
+        return []
+    out = []
+    for _dq, _sq, fn, arg, _word in _CONTENT_TOKEN_RE.findall(value):
+        kind = (fn or "").lower()
+        if kind in _COUNTER_FNS:
+            out.append(_counter_fn_text(kind, arg, state))
+    return out
+
+
+def _generated_text(value, elem, state):
+    """The text a generic ::before/::after/::marker `content` prints: its
+    strings read, its attr() from `elem`, its counters evaluated. `none`
+    prints nothing; quote keywords are only generated for <q> and print
+    nothing here. Returns None for `normal`/an empty value, which carries no
+    declaration."""
+    value = (value or "").strip()
+    if not value or value.lower() == "normal":
+        return None
+    out = []
+    for dq, sq, fn, arg, _word in _CONTENT_TOKEN_RE.findall(value):
+        kind = (fn or "").lower()
+        if fn:
+            if kind == "attr":
+                out.append(elem.get(arg.strip()) or "")
+            elif kind in _COUNTER_FNS:
+                out.append(_counter_fn_text(kind, arg, state))
+        elif not (dq or sq):
+            # A bare keyword (open-quote, …): only <q> generates it.
+            continue
+        else:
+            out.extend(_css_strings(f"'{sq}'" if sq else f'"{dq}"'))
+    return "".join(out)
+
+
+class _CounterDoc:
+    """One spine document's generated content: its counter state walked in
+    document order, the ::before/::after text of every element, its list
+    marker content, and the <q> marks, quote depth included."""
+
+    def __init__(self):
+        self.state = _CounterState()
+        self.before = {}  # elem -> text
+        self.after = {}
+        self.marker = {}  # elem -> custom marker text (None never stored)
+        self.marks = {}  # q -> (before, after)
+
+
+def _build_counter_doc(root, style_resolver):
+    """Walk `root` once, in document order, applying each rendered element's
+    counter-reset/-increment and resolving the counter text its generated
+    content prints. Hidden and non-rendered subtrees change no state, as in a
+    browser, and every instance dies with its scope."""
+    from lxml import etree
+
+    doc = _CounterDoc()
+    state = doc.state
+    css_cache = {}
+    depth = 0
+    hidden_to = 0  # depth of the hidden subtree currently skipped
+
+    def css_of(elem):
+        css = css_cache.get(elem)
+        if css is None:
+            css = (style_resolver(elem) if style_resolver is not None else None) or {}
+            css_cache[elem] = css
+        return css
+
+    q_depth = 0
+    for event, elem in etree.iterwalk(root, events=("start", "end")):
+        if not isinstance(elem.tag, str):
+            continue
+        if event == "start":
+            depth += 1
+            if hidden_to:
+                continue
+            if _is_non_rendered(elem) or _is_hidden(elem, style_resolver):
+                # Its subtree renders nothing and changes no counter.
+                hidden_to = depth
+                continue
+            css = css_of(elem)
+            state.apply(css.get("counter-reset"), css.get("counter-increment"), depth)
+            gen = css.get("gen") or {}
+            if (value := gen.get("before")) is not None:
+                text = _generated_text(value, elem, state)
+                if text:
+                    doc.before[elem] = text
+            if (value := gen.get("marker")) is not None:
+                text = _generated_text(value, elem, state)
+                if text is not None:
+                    doc.marker[elem] = text
+            if _local_tag(elem.tag) == "q":
+                qcss = css.get("q-css") or {}
+                before, q_depth = _q_content(
+                    elem,
+                    qcss,
+                    "before",
+                    q_depth,
+                    _counter_token_texts(qcss.get("before"), state),
+                )
+                doc.marks[elem] = [before, ""]
+        else:
+            if hidden_to:
+                if depth == hidden_to:
+                    hidden_to = 0
+                depth -= 1
+                continue
+            css = css_of(elem)
+            if _local_tag(elem.tag) == "q":
+                qcss = css.get("q-css") or {}
+                doc.marks.setdefault(elem, ["", ""])
+                doc.marks[elem][1], q_depth = _q_content(
+                    elem,
+                    qcss,
+                    "after",
+                    q_depth,
+                    _counter_token_texts(qcss.get("after"), state),
+                )
+            gen = css.get("gen") or {}
+            if (value := gen.get("after")) is not None:
+                text = _generated_text(value, elem, state)
+                if text:
+                    doc.after[elem] = text
+            # ::after is generated before the scope closes, then the child
+            # instances that outlive their origin's siblings die here.
+            state.close(depth)
+            depth -= 1
+    return doc
+
+
+# The last document's generated content, one resolver per document. A new
+# spine document is a new root, so counter state can never cross one.
+_COUNTER_DOCUMENT = {}
+
+
+def _gen_doc(elem, style_resolver=None):
+    """The `_CounterDoc` of `elem`'s spine document, built once and keyed by
+    the document root and its resolver, as the <q> marks are."""
+    root = elem.getroottree().getroot()
+    cache = _COUNTER_DOCUMENT
+    if cache.get("root") is not root or cache.get("resolver") is not style_resolver:
+        cache.update(
+            root=root,
+            resolver=style_resolver,
+            doc=_build_counter_doc(root, style_resolver),
+        )
+    return cache["doc"]
 
 
 def _q_marks(q, style_resolver=None):
     """(open, close) for a <q>, as Kindle Previewer 4.0.3 prints them: its
     ::before and ::after content, else its `quotes`, else its nearest lang's
     pair, at the quote depth its document has reached (#469, #503 QA,
-    #504)."""
-    root = q.getroottree().getroot()
-    cache = _Q_DOCUMENT
-    if cache.get("root") is not root or cache.get("resolver") is not style_resolver:
-        cache.update(
-            root=root,
-            resolver=style_resolver,
-            marks=_document_q_marks(
-                root,
-                lambda e: (
-                    (style_resolver(e) or {}).get("q-css") if style_resolver else None
-                ),
-            ),
-        )
-    marks = cache["marks"].get(q)
+    #504), with any counter()/counters() in the content resolved too."""
+    doc = _gen_doc(q, style_resolver)
+    marks = doc.marks.get(q)
     if marks is None:
-        # Not in its document's walk (a copy): counted on its own.
+        # Not in its document's walk (a copy): counted on its own, with no
+        # counter state.
         marks = _document_q_marks(q, lambda e: None).get(q, ("", ""))
     return marks
 
@@ -1634,8 +1962,18 @@ def _walk_inline(
             parts.append(("", frozenset({LINE_START})))
         return parts
     quote = _q_marks(elem, style_resolver) if local == "q" else None
+    # A non-block inline element's own ::before/::after generated content.
+    # The block root's is applied where its block is built, not here, so a
+    # heading's chapter number is not added twice.
+    gen_before = gen_after = None
+    if not is_root and local != "q" and style_resolver is not None:
+        gen = _gen_doc(elem, style_resolver)
+        gen_before = gen.before.get(elem)
+        gen_after = gen.after.get(elem)
     if quote:
         parts.append((quote[0], cur))
+    if gen_before is not None:
+        parts.append((gen_before, cur))
     text = elem.text
     if text and local == "pre":
         # HTML ignores a newline straight after <pre>; the XML parser keeps it.
@@ -1715,6 +2053,8 @@ def _walk_inline(
             parts.append((child.tail, cur))
     if quote:
         parts.append((quote[1], cur))
+    if gen_after is not None:
+        parts.append((gen_after, cur))
 
     # Close a cell with a boundary so the next one cannot fuse onto it. Emitted
     # unconditionally rather than only when the source lacks whitespace —
@@ -3780,11 +4120,19 @@ _BODY_BLOCK_TAGS = frozenset(
 )
 
 
-def _list_marker(li, css, ordinals):
-    """(marker text, ordinal or None) for `li`, or None when it shows none."""
+def _list_marker(li, css, ordinals, custom=None):
+    """(marker text, ordinal or None) for `li`, or None when it shows none.
+
+    A `::marker { content: … }` the book declares wins outright over the
+    number derived from `start`, `value`, `reversed` and list-style-type —
+    its counter() is resolved by then — including an empty one that suppresses
+    the number; without a declared marker the derived numbering is used
+    unchanged."""
     display = str((css or {}).get("display") or "").strip().lower()
     if display and "list-item" not in display:
         return None  # `li { display: block }` suppresses the marker
+    if custom is not None:
+        return custom, None
     style = _list_style_type(li, css)
     if style == "none":
         return None
@@ -4387,7 +4735,12 @@ def extract_blocks_from_html(
         if parent not in list_ordinals:
             list_ordinals[parent] = _list_ordinals(parent, style_resolver)
         css = style_resolver(elem) if style_resolver is not None else None
-        entry = _list_marker(elem, css, list_ordinals[parent])
+        custom = (
+            _gen_doc(elem, style_resolver).marker.get(elem)
+            if style_resolver is not None
+            else None
+        )
+        entry = _list_marker(elem, css, list_ordinals[parent], custom)
         if entry is None:
             _walk_element(elem)
             return
@@ -4533,6 +4886,17 @@ def extract_blocks_from_html(
             # Only non-breaking spaces is a spacer, not a paragraph (#230, #244).
             if text.strip():
                 text, spans, mark_offsets = _take_marker(text, spans, mark_offsets)
+                if style_resolver is not None:
+                    gen = _gen_doc(elem, style_resolver)
+                    # ::before follows a list marker, ::after closes the
+                    # block; its counter() was resolved at the element in
+                    # document order.
+                    if (before_text := gen.before.get(elem)) is not None:
+                        text, spans, mark_offsets = _prefix_marker(
+                            before_text, text, spans, mark_offsets
+                        )
+                    if (after_text := gen.after.get(elem)) is not None:
+                        text += after_text
                 bstyle = None
                 if style_resolver is not None:
                     css = style_resolver(elem)
@@ -4610,8 +4974,29 @@ def extract_blocks_from_html(
             return
         pending_ids.extend(_own_anchor_ids(elem))
 
+        before_text = after_text = None
+        if style_resolver is not None:
+            gen = _gen_doc(elem, style_resolver)
+            before_text = gen.before.get(elem)
+            after_text = gen.after.get(elem)
+        # A container's ::before is generated before its children, so it waits
+        # for the first text in the subtree, as a list marker does; one that
+        # the subtree never produces does not leak past it.
+        saved_markers = pending_markers[:] if before_text is not None else None
+        if before_text is not None:
+            pending_markers.append((before_text, None))
+
         start = len(blocks)
         _walk_container(elem)
+        if before_text is not None and pending_markers:
+            pending_markers[:] = saved_markers
+        if after_text is not None:
+            # Generated after the children: appended to the subtree's last
+            # paragraph, before a box around the container wraps it.
+            for made in reversed(blocks[start:]):
+                if made.get("type") is None and _has_real_text(made.get("text") or ""):
+                    made["text"] += after_text
+                    break
         if not _make_box(elem, start):
             _carry_container_margins(elem, start)
             _note_margins(elem, start)
