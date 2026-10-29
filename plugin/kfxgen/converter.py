@@ -404,9 +404,53 @@ def _build_style_resolver(oeb_book, item, log, stylizer_factory=None):
             fills[elem] = fill
             return fill
 
+        dirs = {}
+
+        def _direction(elem):
+            """`elem`'s effective writing direction, "ltr"/"rtl", inherited
+            from the nearest element at or above it that sets one: a
+            declared CSS `direction` (the specified value, never the ltr
+            initial) wins over an HTML `dir` hint on the same element.
+            None when nothing sets one, so a logical float/clear has no
+            physical side and reads as unset instead of the whole book
+            being defaulted to LTR. `dir="auto"` sets nothing: its
+            direction is computed from the text, which kfxgen doesn't do,
+            so the parent's is inherited as for an unknown CSS value."""
+            if elem in dirs:
+                return dirs[elem]
+            try:
+                raw = str(stylizer.style(elem).get("direction") or "").strip().lower()
+            except Exception:
+                raw = ""
+            if raw in ("ltr", "rtl"):
+                result = raw
+            elif raw and raw != "inherit":
+                # auto/initial/an unknown keyword establishes no direction
+                # and, as a CSS declaration, shadows the dir hint.
+                result = None
+            else:
+                hinted = str(elem.get("dir") or "").strip().lower()
+                result = hinted if hinted in ("ltr", "rtl") else None
+            if result is None:
+                parent = elem.getparent()
+                if parent is not None:
+                    result = _direction(parent)
+            dirs[elem] = result
+            return result
+
         def resolve(elem):
             try:
                 st = stylizer.style(elem)
+                first_letter = (
+                    _first_letter_css(stylizer, elem, sizes)
+                    if _local_tag(elem.tag) == "p"
+                    else None
+                )
+                if first_letter is not None:
+                    # The pseudo inherits the paragraph's direction; one it
+                    # declares itself wins. A logical float there then
+                    # resolves to the paragraph's side in `_initial`.
+                    first_letter = {"direction": _direction(elem), **first_letter}
                 return {
                     # A number, in CSS px; the generator measures it
                     # against the book's main text size (#241).
@@ -417,11 +461,7 @@ def _build_style_resolver(oeb_book, item, log, stylizer_factory=None):
                     # floated span's float (#240). Declared: neither
                     # inherits. Only a <p> is read for an initial, and
                     # calibre copies the rules on each call (#376 review).
-                    "first-letter": (
-                        _first_letter_css(stylizer, elem, sizes)
-                        if _local_tag(elem.tag) == "p"
-                        else None
-                    ),
+                    "first-letter": first_letter,
                     # A <q>'s marks as the book styles them (#503 QA).
                     "q-css": (
                         _q_css(stylizer, elem) if _local_tag(elem.tag) == "q" else None
@@ -429,6 +469,12 @@ def _build_style_resolver(oeb_book, item, log, stylizer_factory=None):
                     "float": st.get("float"),
                     # Declared: it doesn't inherit (#381).
                     "clear": st.get("clear"),
+                    # Effective writing direction, from the nearest explicit
+                    # CSS `direction` or HTML `dir` at or above this element.
+                    # None when nothing sets one — the ltr initial must not
+                    # read as the book's choice — so inline-start/inline-end
+                    # on float/clear resolve only where a direction exists.
+                    "direction": _direction(elem),
                     # text-align is INHERITED (set on <body> or a wrapper
                     # <div>), so read it inheritance-aware like font-family:
                     # Style.get() returns None when inherited; Style[prop]
@@ -713,17 +759,53 @@ def _img_inline_extras(elem, style_resolver=None):
     return ";".join(out) or None
 
 
+#: A logical float/clear side as its physical one in each writing
+#: direction: inline-start is left in LTR and right in RTL, inline-end the
+#: reverse. A physical `left`/`right` keeps its meaning in either direction.
+_LOGICAL_SIDES = {
+    ("ltr", "inline-start"): "left",
+    ("ltr", "inline-end"): "right",
+    ("rtl", "inline-start"): "right",
+    ("rtl", "inline-end"): "left",
+}
+
+
+def _physical_side(side, direction, *, allow_both=False):
+    """Map a float/clear keyword to a physical side. ``left``/``right``
+    pass through (and ``both`` when `allow_both`); ``inline-start`` and
+    ``inline-end`` resolve through `direction` ("ltr"/"rtl"). A logical
+    side with no known direction, or an unknown keyword, is None: the
+    property reads as unset rather than a guessed side."""
+    if side in ("left", "right") or (allow_both and side == "both"):
+        return side
+    return _LOGICAL_SIDES.get((direction, side))
+
+
 def _float_side(css):
-    """ "left" or "right" for an element floated to that side, else None."""
-    side = str((css or {}).get("float") or "").strip().lower()
-    return side if side in ("left", "right") else None
+    """ "left" or "right" for an element floated to that side, else None.
+    ``inline-start``/``inline-end`` resolve through the element's effective
+    ``direction``; with no explicit direction at or above it a logical
+    float is unreadable and stays unfloated rather than defaulting left."""
+    css = css or {}
+    side = str(css.get("float") or "").strip().lower()
+    return _physical_side(side, css.get("direction"))
 
 
 def _clear_side(css):
     """ "left", "right" or "both" for an element set to clear floats on that
-    side, else None (#381)."""
-    side = str((css or {}).get("clear") or "").strip().lower()
-    return side if side in ("left", "right", "both") else None
+    side, else None (#381). ``inline-start``/``inline-end`` follow the
+    element's effective ``direction``; a logical clear with no direction
+    set is unset."""
+    css = css or {}
+    side = str(css.get("clear") or "").strip().lower()
+    return _physical_side(side, css.get("direction"), allow_both=True)
+
+
+def _is_float_left(css):
+    """A float that lands on the physical left: a declared ``left``, or
+    ``inline-start`` in an LTR context. That is what a drop cap is (#240);
+    an RTL start floats right and is not one kfxgen lays out."""
+    return _float_side(css) == "left"
 
 
 def _img_float(img, parent, size, style_resolver):
@@ -1128,10 +1210,6 @@ def _with_initial(spans, n, add):
         out[-1] = (out[-1][0], out[-1][1] + rest[0][1], out[-1][2])
         rest = rest[1:]
     return out + rest
-
-
-def _is_float_left(css):
-    return str((css or {}).get("float") or "").strip().lower() == "left"
 
 
 def _leading_float(node, style_resolver):

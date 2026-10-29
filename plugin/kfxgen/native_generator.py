@@ -4384,6 +4384,8 @@ class NativeKFXGenerator:
                     if m.group(3):
                         chunk["size"] = m.group(3)  # the markup's own size
                     if m.group(4):
+                        # A physical side: inline-start/inline-end were
+                        # resolved against the element's direction upstream.
                         chunk["float"] = m.group(4)  # left or right (#243)
                     chunks.append(chunk)
                 # Unknown href: drop the token silently
